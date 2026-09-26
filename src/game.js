@@ -44,6 +44,10 @@ export class Game {
              : /steg/i.test(inst.name) ? 'Stegosaur' : null,
       }));
 
+    // Location triggers with sounds: Hammond's narration and Anne's lines play once
+    // where the level places them; ambient loops play while Anne is inside their box.
+    this.triggers = (info.triggers || []).map((tr) => ({ ...tr, fired: 0, inside: false, source: null }));
+
     // The held gun is drawn from the same geometry as the pickup, parented to the camera.
     this.hand = new THREE.Group();
     camera.add(this.hand);
@@ -153,8 +157,33 @@ export class Game {
     this.setInstanceMatrix(d.index, this.matrixFor(d.inst, d.pos, d.yaw, side));
   }
 
+  updateTriggers(player) {
+    // Browsers allow sound only after the first tap or key: until then, leave the
+    // triggers unarmed so nothing plays silently and gets counted as heard.
+    if (!this.audio?.ctx || this.audio.ctx.state !== 'running') return;
+    for (const tr of this.triggers) {
+      const inside = Math.abs(player.pos.x - tr.pos[0]) < tr.half[0] + 0.5 &&
+                     Math.abs(player.pos.y - tr.pos[1]) < tr.half[1] + 0.5 &&
+                     Math.abs(player.pos.z - tr.pos[2]) < tr.half[2] + 2.5;
+      if (inside && !tr.inside) {
+        if (tr.kind === 'loop') {
+          this.audio?.play(tr.sample, { loop: true, volume: 0.6 }).then((s) => (tr.source = s));
+        } else if (tr.fired < (tr.fireCount || 1)) {
+          tr.fired++;
+          this.audio?.play(tr.sample, { volume: tr.kind === 'music' ? 0.5 : 1 });
+        }
+      }
+      if (!inside && tr.inside && tr.source) {
+        try { tr.source.stop(); } catch (e) { /* already ended */ }
+        tr.source = null;
+      }
+      tr.inside = inside;
+    }
+  }
+
   update(dt, player, input) {
     if (this.dead) return;
+    this.updateTriggers(player);
     this.cooldown = Math.max(0, this.cooldown - dt);
     if (input.pickup) this.tryPickup(player);
     if (input.drop) this.drop(player);

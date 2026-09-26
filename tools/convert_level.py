@@ -201,6 +201,7 @@ def convert(level):
     reg = g.sections['.region'][0][2]
     count = struct.unpack_from('<I', reg, 0)[0]
     models, instances, used_tex = {}, [], {}
+    triggers = []
     player_start = None
     # Copies of an animal (RaptorA01, RaptorA02...) carry the prototype's geometry but an
     # empty material; they take the prototype's textured model.
@@ -226,6 +227,19 @@ def convert(level):
         _oname, seh_geo, seh_map = struct.unpack_from('<3I', obj, 0)
         if seh_geo not in g.by_handle:
             continue
+        if klass == 'CLocationTrigger' and isinstance(props.get('Sample'), str):
+            # The trigger volume is its (invisible) box mesh, scaled.
+            half = [5.0, 5.0, 5.0]
+            if seh_obj in g.by_handle:
+                _o, tg, tm = struct.unpack_from('<3I', g.by_handle[seh_obj][2], 0)
+                tmesh = (read_mesh(g, tg) or read_raw_mesh(g, tg, tm)) if tg in g.by_handle else None
+                if tmesh and tmesh['pts']:
+                    pts = tmesh['pts']
+                    half = [max(abs(p[k]) for p in pts) * scale for k in range(3)]
+            sample = props['Sample']
+            kind = 'loop' if sample.upper().startswith('AMB') or 'LOOP' in sample.upper() else 'music' if sample.upper().startswith('MUSIC') else 'voice'
+            triggers.append(dict(name=name, pos=[px, py, pz], half=half, sample=sample, kind=kind,
+                                 attenuation=props.get('Attenuation', 0), fireCount=props.get('FireCount', 1)))
         if klass in LOGIC or props.get('Visible') is False:
             continue
         diffuse = props.get('Diffuse', 1.0)
@@ -312,7 +326,8 @@ def convert(level):
             sea = inst['pos'][2]
     print(f'  sea level: {sea}')
 
-    level_json = dict(level=level, start=player_start, terrain=terrain_info, sea=sea,
+    print(f'  {len(triggers)} ambient sound triggers')
+    level_json = dict(level=level, start=player_start, terrain=terrain_info, sea=sea, triggers=triggers,
                       models={'%x_%g' % k: v for k, v in models.items() if v}, instances=instances)
     json.dump(level_json, open(os.path.join(out, 'level.json'), 'w'))
     print(f'  wrote {out} ({len(blob) // 1024} KB of geometry)')
