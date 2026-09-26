@@ -172,7 +172,10 @@ export class Anne {
   // darken it when scenery is in the way (towards the sky and ground light alone).
   updateShade(dt, collider, world, scene) {
     this.shadeT = (this.shadeT || 0) - dt;
-    if (this.shadeT <= 0 && collider?.boundsTree) {
+    // Against every mesh whole (collider.userData.full), so palm fronds and leaves shade
+    // her too; the game collider itself keeps only trunks.
+    const bvh = (collider?.userData?.full || collider)?.boundsTree;
+    if (this.shadeT <= 0 && bvh) {
       this.shadeT = 0.15;
       const sun = scene.getObjectsByProperty('isDirectionalLight', true)[0];
       if (sun) {
@@ -181,7 +184,7 @@ export class Anne {
         const hand = new THREE.Vector3().setFromMatrixPosition(this.pose[12]);
         this.body.updateWorldMatrix(true, false);
         const p = world.worldToLocal(this.body.localToWorld(hand));
-        const hit = collider.boundsTree.raycastFirst(new THREE.Ray(p.addScaledVector(dir, 0.05), dir), THREE.DoubleSide, 0, 300);
+        const hit = bvh.raycastFirst(new THREE.Ray(p.addScaledVector(dir, 0.05), dir), THREE.DoubleSide, 0, 300);
         this.shadeWant = hit ? SHADOW_LEVEL : 1;
       }
     }
