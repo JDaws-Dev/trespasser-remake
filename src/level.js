@@ -2,15 +2,17 @@
 // Everything is built in Trespasser's own coordinates (metres, Z up); the caller
 // puts the returned group under a Y-up root.
 import * as THREE from 'three';
+import { createWaterMaterial } from './water.js';
+import { isPlant, addWindAttributes, windMaterial, windDepthMaterial } from './foliage.js';
 
 const textureLoader = new THREE.TextureLoader();
 const pending = [];
 
-function loadTexture(url) {
+function loadTexture(url, colour = true) {
   let done;
   pending.push(new Promise((resolve) => (done = resolve)));
   const tex = textureLoader.load(url, done, undefined, done);
-  tex.colorSpace = THREE.SRGBColorSpace;
+  if (colour) tex.colorSpace = THREE.SRGBColorSpace;
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
   tex.anisotropy = PHONE ? 2 : 8;
   return tex;
@@ -73,13 +75,29 @@ function gaitMaterial(base, bounds) {
   return mat;
 }
 
+// Rock, bark, wood and concrete get a normal map whose alpha is a roughness:
+// crevices rough, raised faces a little smoother (tools/derive_normals.py).
+function addReliefMaps(mat, normalMap) {
+  mat.normalMap = normalMap;
+  mat.normalScale = new THREE.Vector2(0.9, 0.9);
+  mat.roughness = 1;
+  mat.onBeforeCompile = (shader) => {
+    shader.fragmentShader = shader.fragmentShader.replace('#include <roughnessmap_fragment>',
+      '#include <roughnessmap_fragment>\n  roughnessFactor *= texture2D(normalMap, vNormalMapUv).a;');
+  };
+}
+
 export async function loadLevel(base, onProgress = () => {}) {
-  const [info, meshes, terrainBytes, hdList] = await Promise.all([
+  const [info, meshes, terrainBytes, hdList, nrmList] = await Promise.all([
     fetch(`${base}/level.json`).then((r) => r.json()),
     fetch(`${base}/meshes.bin`).then((r) => r.arrayBuffer()),
     fetch(`${base}/terrain.bin`).then((r) => (r.ok ? r.arrayBuffer() : null)),
     fetch(`${base}/hd.json`).then((r) => (r.ok ? r.json() : {})).catch(() => ({})),
+    // Normal maps derived from the solid surfaces' own shading (tools/derive_normals.py);
+    // desktop only, for the memory.
+    (PHONE && !new URLSearchParams(location.search).has('hd')) || new URLSearchParams(location.search).get('nrm') === '0' ? [] : fetch(`${base}/nrm.json`).then((r) => (r.ok ? r.json() : [])).catch(() => []),
   ]);
+  const withNormals = new Set(nrmList);
   hd = hdList;
   onProgress('Building world…');
 
@@ -99,6 +117,7 @@ export async function loadLevel(base, onProgress = () => {}) {
       }
       // alphaTest keeps foliage cut-outs crisp without sorting transparent geometry.
       mat = new THREE.MeshStandardMaterial({ map: tex, alphaTest: 0.5, side: THREE.DoubleSide, roughness: 0.88, metalness: 0 });
+      if (withNormals.has(part.texture)) addReliefMaps(mat, loadTexture(`${base}/nrm/${part.texture}.png`, false));
     } else {
       const [r, g, b] = part.colour;
       mat = new THREE.MeshStandardMaterial({ color: new THREE.Color(r / 255, g / 255, b / 255), roughness: 0.8, metalness: 0 });
@@ -158,12 +177,12 @@ export async function loadLevel(base, onProgress = () => {}) {
     byModel.delete(key);
   }
 
-  // Water surfaces: translucent, lit only a little, drawn after solid geometry.
-  const waterMat = new THREE.MeshStandardMaterial({
-    color: 0x1f6b74, transparent: true, opacity: 0.6, depthWrite: false, side: THREE.DoubleSide, roughness: 0.35, metalness: 0, envMapIntensity: 0.5,
-  });
+  // Water surfaces: the shared water shader, still (water.js).
+  const waterMat = createWaterMaterial({ kind: 'pond' });
   let seaLevel = null, seaScale = 0;
   const animalMaterials = new Map();
+  const windMaterials = new Map();   // base material uuid -> { mat, depth }
+  const wind = new URLSearchParams(location.search).get('wind') !== '0';
   for (const [key, list] of byModel) {
     const isWater = list[0].cls === 'CEntityWater';
     // The level's own horizon-sea sheet is replaced by the reflecting sea (main.js).
@@ -177,8 +196,16 @@ export async function loadLevel(base, onProgress = () => {}) {
     }
     // The sea is the largest water surface; ponds sit higher inland.
     if (isWater) for (const inst of list) if (inst.scale > seaScale) { seaScale = inst.scale; seaLevel = inst.pos[2]; }
-    for (const { geo, mat } of partGeoms.get(key) || []) {
+    // Plants sway in the wind (foliage.js); their parts carry a height-above-base attribute.
+    const isPlantModel = wind && list[0].cls === 'CInstance' && isPlant(list[0].name);
+    const parts = isPlantModel ? addWindAttributes(partGeoms.get(key) || []) : partGeoms.get(key) || [];
+    for (const { geo, mat } of parts) {
       let material = isWater ? waterMat : mat;
+      let depthMaterial = null;
+      if (isPlantModel && mat.map) {
+        if (!windMaterials.has(mat.uuid)) windMaterials.set(mat.uuid, { mat: windMaterial(mat, gaitUniforms.uTime), depth: windDepthMaterial(mat, gaitUniforms.uTime) });
+        ({ mat: material, depth: depthMaterial } = windMaterials.get(mat.uuid));
+      }
       if (isAnimal) {
         // Animals get their own copy of the material with the gait shader in it.
         // Keyed per animal as well: two species can share a skin texture but not
@@ -188,6 +215,7 @@ export async function loadLevel(base, onProgress = () => {}) {
         material = animalMaterials.get(gk);
       }
       const mesh = new THREE.InstancedMesh(geo, material, list.length);
+      if (depthMaterial) mesh.customDepthMaterial = depthMaterial;
       if (isAnimal) {
         mesh.geometry = geo.clone();
         mesh.geometry.setAttribute('aGait', new THREE.InstancedBufferAttribute(new Float32Array(list.length), 1));

@@ -5,7 +5,8 @@ import * as THREE from 'three';
 import { loadLevel, textureUrl, gaitUniforms } from './level.js';
 import { Input } from './input.js';
 import { paintTerrain } from './terrainPaint.js';
-import { buildCollider, moveCapsule } from './collision.js';
+import { buildCollider } from './collision.js';
+import { createPhysics } from './physics.js';
 import { Game } from './game.js';
 import { Audio } from './audio.js';
 import { Atmosphere, setupRenderer } from './atmosphere.js';
@@ -67,22 +68,25 @@ if (skyTex) {
   skyPlane.renderOrder = -1;
   world.add(skyPlane);
 }
-// The open sea reaches the horizon (only where the level has one).
-if (info.sea != null) atmosphere.makeSea(world, info.sea, '.');
+// Water: terrain depth and sky reflection for every pond, and the open sea
+// to the horizon where the level has one.
+atmosphere.makeSea(world, info.sea, '.', { renderer, terrain });
 // Every lit material takes the sun's cascaded shadows.
 const lit = new Set();
 group.traverse((o) => { if (o.material && o.material.isMeshStandardMaterial) lit.add(o.material); });
 let painted = null;
 if (terrain) {
   loading.textContent = 'Painting the terrain…';
-  painted = paintTerrain(renderer, terrain, decals);
+  painted = paintTerrain(renderer, terrain, decals, { seaLevel: info.sea });
   painted.traverse((o) => { if (o.material) lit.add(o.material); });
   world.add(painted);
   terrain.visible = false;   // still used for ground height
 }
 for (const m of lit) atmosphere.setupMaterial(m);
 loading.textContent = 'Building collision…';
-const collider = buildCollider(terrain, info, partGeoms);
+const collider = buildCollider(terrain, info, partGeoms);   // for the game's line-of-fire tests
+loading.textContent = 'Building physics…';
+const physics = await createPhysics({ info, terrain, partGeoms, refs, level: LEVEL });
 loading.remove();
 
 // Player state, in game coordinates (x east, y north, z up).
@@ -122,6 +126,9 @@ const audio = new Audio(`levels/${LEVEL}`);
 const game = new Game({ scene, world, camera, info, refs, collider, groundAt, hud, level: LEVEL, audio });
 game.showHint(input.touch ? 'Left stick walks, right stick looks. GRAB picks up a gun, FIRE shoots.' : 'WASD walk · Shift run · Space jump · E pick up · click to fire · G drop · Esc menu', 7);
 window.__game = game;
+game.physics = physics;
+physics.attachGame(game);
+const sfx = window.__sfx = new (await import('./sfx.js')).Sfx({ audio, game, physics, info, groundAt });   // collisions, footsteps, Anne's voice
 
 const clock = new THREE.Clock();
 const eye = new THREE.Vector3();
@@ -145,9 +152,12 @@ renderer.setAnimationLoop(() => {
     (fy * move.forward - fx * move.strafe) * speed * dt,
     player.vz * dt,
   );
-  // Short steps are taken whole; the capsule resolves against scenery and terrain.
-  const { onGround } = moveCapsule(collider, player.pos, delta);
-  if (onGround) player.vz = move.jump ? 4.2 : Math.max(player.vz, 0) * 0;
+  // Anne's capsule slides along scenery and terrain, steps up and shoves loose objects.
+  const onGround = physics.movePlayer(player, delta, dt);
+  if (onGround) player.vz = move.jump ? 4.2 : 0;
+  physics.playerVel = delta.divideScalar(Math.max(dt, 1e-3));
+  physics.update(dt, player);
+  sfx.update(dt, player);
   // Safety net: never fall through the world.
   if (player.pos.z < -50) player.pos.z = groundAt(player.pos.x, player.pos.y) + 1;
 
@@ -159,7 +169,7 @@ renderer.setAnimationLoop(() => {
   camera.quaternion.premultiply(world.quaternion);
 
   if (skyPlane) skyPlane.position.set(player.pos.x, player.pos.y, player.pos.z + 350);
-  painted?.focus(player.pos.x, player.pos.y);
+  painted?.focus(player.pos.x, player.pos.y, player.pos.z);
   atmosphere.update(dt);
   audio.updateListener(new THREE.Vector3(player.pos.x, player.pos.y, player.pos.z + EYE_HEIGHT),
     new THREE.Vector3(-Math.sin(player.yaw), Math.cos(player.yaw), 0), new THREE.Vector3(0, 0, 1));

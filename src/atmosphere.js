@@ -4,7 +4,7 @@
 // (Y up); the level itself sits under the rotated world root.
 import * as THREE from 'three';
 import { Sky } from 'three/examples/jsm/objects/Sky.js';
-import { Water } from 'three/examples/jsm/objects/Water.js';
+import { Sea, setupWater, waterUniforms } from './water.js';
 import { CSM } from 'three/examples/jsm/csm/CSM.js';
 
 export function setupRenderer(renderer) {
@@ -54,7 +54,7 @@ export class Atmosphere {
     const env = pmrem.fromScene(envScene, 0.02);
     scene.add(sky);
     scene.environment = env.texture;
-    scene.environmentIntensity = 0.55;
+    scene.environmentIntensity = 0.7;
     pmrem.dispose();
 
     // Haze: the horizon colour of the dome, thickening with distance.
@@ -78,67 +78,37 @@ export class Atmosphere {
     this.csm.fade = true;
     for (const l of this.csm.lights) { l.color.set(0xfff0dc); l.shadow.normalBias = 0.05; }
 
-    scene.add(new THREE.HemisphereLight(0xbfd4ea, 0x6b5a3e, 0.45));
+    scene.add(new THREE.HemisphereLight(0xbfd4ea, 0x6b5a3e, 0.35));
   }
 
   // Cascaded shadows are injected into every lit material; materials that
   // already hook the shader (the dinosaur gait) keep their hook.
   setupMaterial(material) {
     const prev = material.onBeforeCompile;
+    // three.js keys compiled programs by the hook's source text, which after
+    // wrapping is the same for every material: keep the original hook's key, or
+    // a gait/wind/terrain material would share a plain material's program.
+    const prevKey = material.customProgramCacheKey();
     this.csm.setupMaterial(material);
     const csmHook = material.onBeforeCompile;
     material.onBeforeCompile = (shader, r) => { csmHook(shader, r); if (prev) prev(shader, r); };
+    material.customProgramCacheKey = () => `csm|${prevKey}`;
     material.needsUpdate = true;
   }
 
-  // The open sea: a reflecting plane with animated ripples, in game space (under
-  // the world root, Z up).
-  makeSea(world, level, textureUrlBase) {
-    // A reflecting sea draws the whole scene a second time every frame; phones
-    // get a plain translucent surface instead.
-    if (this.phone && !new URLSearchParams(location.search).has('hd')) {
-      const sea = new THREE.Mesh(new THREE.PlaneGeometry(20000, 20000),
-        new THREE.MeshStandardMaterial({ color: 0x2b8a8c, transparent: true, opacity: 0.8, roughness: 0.1, metalness: 0, depthWrite: false }));
-      sea.position.z = level - 0.05;
-      sea.renderOrder = 9;
-      this.setupMaterial(sea.material);
-      world.add(sea);
-      return sea;
-    }
-    const normals = new THREE.TextureLoader().load(`${textureUrlBase}/detail/water_n.png`);
-    normals.wrapS = normals.wrapT = THREE.RepeatWrapping;
-    const water = new Water(new THREE.PlaneGeometry(20000, 20000), {
-      textureWidth: this.phone ? 256 : 512,
-      textureHeight: this.phone ? 256 : 512,
-      waterNormals: normals,
-      sunDirection: this.sunDir.clone(),
-      sunColor: 0xfff0dc,
-      waterColor: 0x2b8a8c,
-      distortionScale: 1.6,
-      fog: true,
-      alpha: 0.8,
-    });
-    // Translucent, so the sandy lagoon floor shows through in the shallows.
-    water.material.transparent = true;
-    water.material.depthWrite = false;
-    water.material.uniforms.size.value = 5.0;
-    // Water reflects about 2% head-on, not the shader's 30%: the sea keeps its colour.
-    water.material.fragmentShader = water.material.fragmentShader.replace('float rf0 = 0.3;', 'float rf0 = 0.04;');
-    water.position.z = level - 0.05;
-    water.renderOrder = 9;
-    world.add(water);
-    // Under the sea, a haze-coloured floor: where a ripple's reflection dips below
-    // the horizon it sees this instead of the dark underside of the sky dome.
-    const floor = new THREE.Mesh(new THREE.PlaneGeometry(40000, 40000),
-      new THREE.MeshBasicMaterial({ color: this.scene.fog.color, fog: true }));
-    floor.position.z = level - 3;
-    world.add(floor);
-    this.water = water;
-    return water;
+  // Water: the shared inputs every water surface reads (terrain depth, sky
+  // reflection, sun), then the open sea where the level has one (`level`, game z;
+  // null for none). See water.js.
+  makeSea(world, level, textureUrlBase, { renderer, terrain } = {}) {
+    setupWater({ renderer, sky: this.sky, terrain, sunDir: this.sunDir, base: textureUrlBase });
+    if (level == null) return null;
+    this.sea = new Sea({ renderer, scene: this.scene, camera: this.csm.camera, level, sky: this.sky });
+    return this.sea.mesh;
   }
 
   update(dt) {
     this.csm.update();
-    if (this.water) this.water.material.uniforms.time.value += dt * 0.6;
+    waterUniforms.uTime.value += dt;
+    this.sea?.update();
   }
 }

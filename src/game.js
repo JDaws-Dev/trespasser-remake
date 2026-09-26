@@ -3,6 +3,8 @@
 // Game coordinates throughout (metres, Z up).
 import * as THREE from 'three';
 import { UI } from './ui.js';
+import { Blood } from './blood.js';
+import { Anne, frontLayer } from './anne.js';
 
 const RAPTOR_SPEED = 7.5, RAPTOR_TURN = 3.0, RAPTOR_SIGHT = 70, RAPTOR_BITE = 2.6;
 const RAPTOR_DAMAGE = 12, RAPTOR_BITE_COOLDOWN = 1.1;
@@ -53,7 +55,18 @@ export class Game {
     // The held gun is drawn from the same geometry as the pickup, parented to the camera.
     this.hand = new THREE.Group();
     camera.add(this.hand);
+    // Anne's own chest and arm (tools/export_anne.py), when the level has them: she
+    // then holds the gun in her hand instead.
+    this.anne = null;
+    Anne.load(`levels/${level}`).then((a) => {
+      if (!a) return;
+      this.anne = a;
+      camera.add(a.root);
+      window.__anne = a;   // for automated tests
+      if (this.gun) this.holdGun(this.gun);
+    }).catch((e) => console.warn('Anne:', e));
 
+    this.blood = new Blood(this);
     this.ui = new UI({ game: this, touch: matchMedia('(pointer: coarse)').matches, level });
   }
 
@@ -79,42 +92,77 @@ export class Game {
   }
 
   tryPickup(player) {
+    if (this.physics?.held) return this.physics.release();   // E again lets go of a held object
     let best = null, bestD = 3.0;
     for (const p of this.pickups) {
       if (p.taken) continue;
       const d = Math.hypot(p.pos.x - player.pos.x, p.pos.y - player.pos.y) + Math.max(0, Math.abs(p.pos.z - player.pos.z) - 1.5);
       if (d < bestD) { best = p; bestD = d; }
     }
-    if (!best) return false;
+    if (!best) return this.physics?.grab(player) ?? false;   // no gun: any light object ahead
     if (this.gun) this.drop(player);
     best.taken = true;
+    this.physics?.take(best.index);
     this.setInstanceMatrix(best.index, new THREE.Matrix4().makeScale(0, 0, 0));
     this.gun = best;
-    this.hand.clear();
-    for (const { mesh } of this.refs[best.index] || []) {
-      const held = new THREE.Mesh(mesh.geometry, mesh.material);
-      held.frustumCulled = false;
-      this.hand.add(held);
-    }
-    // Game axes to camera axes (+Y forward becomes -Z, +Z up becomes +Y), held low-right.
-    this.hand.rotation.set(-Math.PI / 2, 0, 0);
-    this.hand.scale.setScalar(best.inst.scale);
-    this.hand.position.set(0.28, -0.22, -0.55);
+    this.holdGun(best);
     this.showHint(`Picked up the ${best.name}`, 2.5);
     return true;
   }
 
+  // Put the gun's meshes in Anne's hand, gripped by its magnets (or, for a gun the level
+  // gives none, a grip made from its shape); without her, float it low-right in front
+  // of the camera.
+  holdGun(g) {
+    this.hand.clear();
+    this.anne?.held.clear();
+    this.holding = this.anne && this.anne.gripFor(g.inst.name);
+    if (this.anne && !this.holding && (this.refs[g.index] || []).length) {
+      const box = new THREE.Box3();
+      for (const { mesh } of this.refs[g.index]) { mesh.geometry.computeBoundingBox(); box.union(mesh.geometry.boundingBox); }
+      this.holding = this.anne.genericGrip(box, g.inst.scale);
+    }
+    const into = this.holding ? this.anne.held : this.hand;
+    for (const { mesh } of this.refs[g.index] || []) {
+      // Anne's hand is drawn in front of the world, and the gun with it.
+      const held = new THREE.Mesh(mesh.geometry, this.holding ? frontLayer(mesh.material.clone()) : mesh.material);
+      held.frustumCulled = false;
+      held.renderOrder = 11;
+      into.add(held);
+    }
+    if (this.holding) {
+      this.holding = { ...this.holding, scale: g.inst.scale };
+      this.anne.setSubstitute(this.holding.grip.substitute);
+      return;
+    }
+    // Game axes to camera axes (+Y forward becomes -Z, +Z up becomes +Y), held low-right.
+    this.hand.rotation.set(-Math.PI / 2, 0, 0);
+    this.hand.scale.setScalar(g.inst.scale);
+    this.hand.position.set(0.28, -0.22, -0.55);
+  }
+
   drop(player) {
+    if (this.physics?.release()) return;   // a held object goes first
     const g = this.gun;
     if (!g) return;
     g.taken = false;
-    g.pos.set(player.pos.x, player.pos.y, this.groundAt(player.pos.x, player.pos.y) + 0.1);
-    this.setInstanceMatrix(g.index, this.matrixFor(g.inst, g.pos, player.yaw));
+    if (this.physics) {
+      // Let go of it in front of her, falling with her motion.
+      const f = new THREE.Vector3(-Math.sin(player.yaw), Math.cos(player.yaw), 0);
+      g.pos.set(player.pos.x + f.x * 0.6, player.pos.y + f.y * 0.6, player.pos.z + 1.1);
+      this.physics.releaseGun(g.index, g.pos, player.yaw, this.physics.playerVel);
+    } else {
+      g.pos.set(player.pos.x, player.pos.y, this.groundAt(player.pos.x, player.pos.y) + 0.1);
+      this.setInstanceMatrix(g.index, this.matrixFor(g.inst, g.pos, player.yaw));
+    }
     this.gun = null;
+    this.holding = null;
     this.hand.clear();
+    this.anne?.held.clear();
   }
 
   fire(player) {
+    if (this.physics?.throw(player)) return;   // holding a crate or a rock: throw it
     const g = this.gun;
     if (!g || this.cooldown > 0) return;
     const rof = g.inst.props.ROF || 2;
@@ -141,7 +189,10 @@ export class Game {
       const p = ray.intersectSphere(sphere, new THREE.Vector3());
       if (p) { const dist = p.distanceTo(originGame); if (dist < targetDist) { target = d; targetDist = dist; } }
     }
+    // A loose object in the way takes the bullet (and is knocked by it).
+    if (this.physics?.shot(originGame, dirGame, targetDist, g.inst.props.Push)) target = null;
     if (target) {
+      this.blood?.shot(target, ray, targetDist, g);
       target.hp -= (g.inst.props.Damage || 10) * (g.inst.props.DamageMultiplier || 1);
       const wasAwake = target.awake;
       target.awake = true;
@@ -153,6 +204,8 @@ export class Game {
   kill(d) {
     d.alive = false;
     this.audio?.vocal(d.vocal, 'Dying', d.pos);
+    this.blood?.kill(d);
+    if (this.physics?.ragdoll(d)) return;   // tumbles as a body, knocked by the shot
     // Down on its side.
     const side = new THREE.Matrix4().makeRotationY(Math.PI / 2);
     d.pos.z = this.groundAt(d.pos.x, d.pos.y) + d.radius * 0.6;
@@ -195,6 +248,33 @@ export class Game {
     this.recoil = Math.max(0, (this.recoil || 0) - dt * 6);
     this.hand.position.z = -0.55 + this.recoil * 0.08;
     this.hand.rotation.x = -Math.PI / 2 + this.recoil * 0.25;
+    if (this.anne) {
+      // Her hand: at rest it hangs relaxed (the Natural shape) or sights the gun. In arm
+      // mode it follows the physical hand (physics.hand: palm target, wrist rotation in
+      // her view frame), open when empty, in the held object's grip shape when holding;
+      // stowing lowers the arm. With no gun, it holds what she carries (E-grab).
+      let reach = null;
+      const ph = this.physics, a = this.anne, hand = ph?.hand;
+      const gripOf = (e) => (e?.inst ? a.reachFor(e.inst.name, ph.heldMatrix?.(new THREE.Matrix4()) || new THREE.Matrix4(), e.radius || 0.3).sub : a.poseIndex('Anne_Rock'));
+      if (hand && (hand.stowed || hand.mode === 'stow')) {
+        reach = { stow: true };
+      } else if (hand && hand.mode === 'arm' && hand.target) {
+        const r = hand.rotation || null;
+        reach = { palm: hand.target, viewRot: r?.isQuaternion ? r : null, rot: r && !r.isQuaternion ? r : null };
+        if (!this.holding) {
+          const held = hand.holding && (hand.holding.inst ? hand.holding : ph.byHandle?.get(hand.holding.handle) || ph.held?.entry);
+          a.setSubstitute(hand.holding ? gripOf(held) : 0);   // gripping, else open
+        }
+      } else if (!this.holding && ph?.held) {
+        const e = ph.held.entry;
+        reach = a.reachFor(e.inst.name, ph.heldMatrix(new THREE.Matrix4()), e.radius);
+        a.setSubstitute(reach.sub);
+      }
+      if (!this.holding && !reach?.palm) a.setSubstitute(a.poseIndex('Anne_Natural'));
+      if (this.holding) a.setSubstitute(this.holding.grip.substitute);
+      this.anne.update(dt, player, this.holding, this.recoil, reach);
+      this.anne.updateShade(dt, this.collider, this.world, this.scene);
+    }
 
     // Any gun within reach?
     let near = null;
@@ -222,6 +302,7 @@ export class Game {
         if (d.awake && dist < RAPTOR_BITE && d.bite === 0) {
           d.bite = RAPTOR_BITE_COOLDOWN;
           this.audio?.vocal(d.vocal, Math.random() < 0.5 ? 'Bite' : 'Attack', d.pos);
+          this.blood?.bite(d, player);
           this.hurt(RAPTOR_DAMAGE);
         }
       } else {
@@ -253,6 +334,7 @@ export class Game {
   hurt(amount) {
     if (this.dead) return;
     this.hp -= amount;
+    this.blood?.hurt(amount);
     this.ui.update({ hp: this.hp, maxHp: PLAYER_HP, gun: this.gun, hint: this.hint });
     if (this.hp <= 0) {
       this.dead = true;

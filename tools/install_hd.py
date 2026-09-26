@@ -62,10 +62,10 @@ def main():
         return 1
 
     arr = np.asarray(up, float)
-    # Put back the original's broad colour (anything wider than ~2 texels): the
+    # Put back the original's broad colour (anything wider than ~8 texels): the
     # model tends to drift hue and brightness a little, and the upscale is only
     # there for the fine detail.
-    blur = ImageFilter.GaussianBlur(2)
+    blur = ImageFilter.GaussianBlur(float(os.environ.get('HD_COLOUR_BLUR', 8)))
     lo_orig = orig.convert('RGB').filter(blur).resize((w, h), Image.BICUBIC)
     lo_up = up.resize((ow, oh), Image.LANCZOS).filter(blur).resize((w, h), Image.BICUBIC)
     arr += np.asarray(lo_orig, float) - np.asarray(lo_up, float)
