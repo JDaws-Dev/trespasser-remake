@@ -399,15 +399,26 @@ export class Physics {
     const axisOf = (f) => new THREE.Vector3(f[0] ? 1 : 0, f[1] ? 1 : 0, f[2] ? 1 : 0).applyQuaternion(qMag);
     const nFree = mg.free.filter(Boolean).length, nSlide = (mg.tfree || []).filter(Boolean).length;
     let data, kind;
-    if (nFree === 1) {
+    // Against the world the free axes are the object's own (InfoBox.cpp: "Magnet
+    // orientation ignored"; the hinge uses the object's base rotation), and the anchor
+    // body is posed like the object, so the same local axis serves both sides.
+    // "The object" is its physics base: a compound's first box (whose axes can differ
+    // from the mesh's: the Town dam lever's box Z is its mesh Y, so it swings rather
+    // than spins).
+    const box0 = this.boxes[slave.inst.name]?.[0];
+    const baseQ = box0 ? boxQuat(box0) : new THREE.Quaternion();
+    const own = (f) => new THREE.Vector3(f[0] ? 1 : 0, f[1] ? 1 : 0, f[2] ? 1 : 0).normalize().applyQuaternion(baseQ);
+    if (nFree === 1 && !master) {
+      data = RAPIER.JointData.revoluteWithAxes(a1, a2, own(mg.free), own(mg.free));
+      kind = 'hinge';
+    } else if (nFree === 1) {
       const w = axisOf(mg.free);
       data = RAPIER.JointData.revoluteWithAxes(a1, a2, w.clone().applyQuaternion(oQ.clone().invert()), w.clone().applyQuaternion(slave.curQ.clone().invert()));
       kind = 'hinge';
     } else if (nFree > 1) {
       data = RAPIER.JointData.spherical(a1, a2); kind = 'ball';
     } else if (nSlide >= 1 && !master) {
-      const w = axisOf(mg.tfree).normalize().applyQuaternion(slave.curQ.clone().invert());
-      data = RAPIER.JointData.prismatic(a1, a2, w); kind = 'slide';
+      data = RAPIER.JointData.prismatic(a1, a2, own(mg.tfree)); kind = 'slide';
     } else {
       data = RAPIER.JointData.fixed(a1, rq(oQ.clone().invert().multiply(qMag)), a2, rq(slave.curQ.clone().invert().multiply(qMag)));
       kind = 'weld';
