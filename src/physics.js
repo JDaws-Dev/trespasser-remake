@@ -39,12 +39,13 @@ const rq = (q) => ({ x: q.x, y: q.y, z: q.z, w: q.w });
 
 export async function createPhysics(opts) {
   await RAPIER.init();
-  const extra = await fetch(`levels/${opts.level}/physics.json`).then((r) => (r.ok ? r.json() : null)).catch(() => null);
-  return new Physics({ ...opts, extra: extra || { boxes: {}, magnets: [] } });
+  const load = (f) => fetch(`levels/${opts.level}/${f}`).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+  const [extra, colliders] = await Promise.all([load('physics.json'), load('colliders.json')]);
+  return new Physics({ ...opts, extra: extra || { boxes: {}, magnets: [] }, colliders: colliders || { solids: [], markers: {} } });
 }
 
 export class Physics {
-  constructor({ info, terrain, partGeoms, refs, extra }) {
+  constructor({ info, terrain, partGeoms, refs, extra, colliders }) {
     Object.assign(this, { info, refs, partGeoms });
     this.world = new RAPIER.World({ x: 0, y: 0, z: -9.81 });
     this.world.timestep = STEP;
@@ -106,6 +107,23 @@ export class Physics {
       for (let i = 0; i < idx.length; i++) idx[i] = i;
       this.world.createCollider(RAPIER.ColliderDesc.trimesh(new Float32Array(verts), idx).setFriction(0.7), ground);
     }
+
+    // --- Invisible solids (never drawn): the F* walls and floors and Baker* blockers
+    // that keep Anne out of the sea and up on walkways. Boxes, as the original.
+    for (const so of colliders.solids) {
+      _m.set(so.rot[0][0], so.rot[0][1], so.rot[0][2], 0, so.rot[1][0], so.rot[1][1], so.rot[1][2], 0,
+             so.rot[2][0], so.rot[2][1], so.rot[2][2], 0, 0, 0, 0, 1);
+      const q = new THREE.Quaternion().setFromRotationMatrix(_m);
+      const list = so.compound && this.boxes[so.name] ? this.boxes[so.name] : [{ pos: so.c, rot: null, half: so.half }];
+      for (const b of list) {
+        _v.fromArray(b.pos).multiplyScalar(so.scale).applyQuaternion(q).add(_v2.fromArray(so.pos));
+        _q2.copy(q); if (b.rot) _q2.multiply(boxQuat(b));
+        this.world.createCollider(RAPIER.ColliderDesc.cuboid(...b.half.map((h) => Math.max(0.02, h * so.scale)))
+          .setTranslation(_v.x, _v.y, _v.z).setRotation(rq(_q2)).setFriction(0.7), ground);
+        staticBoxes++;
+      }
+    }
+    this.markers = colliders.markers || {};   // named helper placements (TeleportDest*, Emit*...)
 
     // --- Dynamic objects: everything Moveable and Tangible that is drawn.
     for (const inst of info.instances) {
@@ -171,7 +189,9 @@ export class Physics {
   addBody(inst) {
     const p = inst.props, s = inst.scale;
     const q = instQuat(inst);
-    const body = this.world.createRigidBody(RAPIER.RigidBodyDesc.dynamic()
+    // Frozen objects (doors, the monorail track, the elevator...) stay put until a
+    // trigger releases them (unfreeze).
+    const body = this.world.createRigidBody((p.Frozen ? RAPIER.RigidBodyDesc.fixed() : RAPIER.RigidBodyDesc.dynamic())
       .setTranslation(...inst.pos).setRotation(rq(q)).setCcdEnabled(true)
       .setLinearDamping(0.05).setAngularDamping(0.2));
     // Boxes in the body's frame: the compound's own, else the mesh extents.
@@ -198,7 +218,7 @@ export class Physics {
     const e = {
       inst, index: inst.index, body, mass, radius, floats: p.Floats === true, gun: inst.cls === 'CGun',
       prevP: new THREE.Vector3(...inst.pos), prevQ: q.clone(), curP: new THREE.Vector3(...inst.pos), curQ: q.clone(),
-      track: null, scale: s,
+      track: null, scale: s, frozen: !!p.Frozen,
     };
     this.entries.push(e);
     this.byIndex.set(e.index, e);
@@ -206,33 +226,171 @@ export class Physics {
     return e;
   }
 
+  // A magnet (Lib/Physics/Magnet.cpp): welds `slave` to `master`, or to the world when
+  // only one object is named. XFree/YFree/ZFree make it a hinge about that axis of the
+  // magnet's frame, X/Y/ZTFree a slide along it; Drive turns the hinge by motor,
+  // Friction damps it, RestoreStrength springs it back, AngleMin/Max limit it;
+  // Breakable ones let go when knocked harder than BreakStrength.
   addMagnet(mg, slave, master) {
-    // The magnet's own frame, in the slave's and the master's (or the world's) frames.
     _m.set(mg.rot[0][0], mg.rot[0][1], mg.rot[0][2], 0, mg.rot[1][0], mg.rot[1][1], mg.rot[1][2], 0,
            mg.rot[2][0], mg.rot[2][1], mg.rot[2][2], 0, 0, 0, 0, 1);
     const qMag = new THREE.Quaternion().setFromRotationMatrix(_m);
     const pMag = new THREE.Vector3(...mg.pos);
-    const local = (e) => {
-      if (!e) return { p: pMag.clone(), q: qMag.clone() };
-      const qi = e.curQ.clone().invert();
-      return { p: pMag.clone().sub(e.curP).applyQuaternion(qi), q: qi.multiply(qMag) };
-    };
-    const a = local(master), b = local(slave);
-    const nFree = mg.free.filter(Boolean).length;
-    let data;
-    if (nFree === 1) {
-      // A hinge about the magnet's free axis, expressed in each body's frame.
-      const axis = new THREE.Vector3(mg.free[0] ? 1 : 0, mg.free[1] ? 1 : 0, mg.free[2] ? 1 : 0);
-      data = RAPIER.JointData.revoluteWithAxes(a.p, b.p, axis.clone().applyQuaternion(a.q), axis.clone().applyQuaternion(b.q));
-    } else if (nFree > 1) {
-      data = RAPIER.JointData.spherical(a.p, b.p);
-    } else {
-      data = RAPIER.JointData.fixed(a.p, rq(a.q), b.p, rq(b.q));
+    // Against the world, the other side is a fixed anchor body posed like the slave, so
+    // both joint frames coincide (Rapier's hinge and slide take one local axis).
+    let other = master?.body;
+    if (!master) {
+      other = this.world.createRigidBody(RAPIER.RigidBodyDesc.fixed()
+        .setTranslation(slave.curP.x, slave.curP.y, slave.curP.z).setRotation(rq(slave.curQ)));
     }
-    const joint = this.world.createImpulseJoint(data, master ? master.body : this.ground, slave.body, false);
+    const oP = master ? master.curP : slave.curP, oQ = master ? master.curQ : slave.curQ;
+    const local = (p, q) => pMag.clone().sub(p).applyQuaternion(q.clone().invert());
+    const a1 = local(oP, oQ), a2 = local(slave.curP, slave.curQ);
+    const axisOf = (f) => new THREE.Vector3(f[0] ? 1 : 0, f[1] ? 1 : 0, f[2] ? 1 : 0).applyQuaternion(qMag);
+    const nFree = mg.free.filter(Boolean).length, nSlide = (mg.tfree || []).filter(Boolean).length;
+    let data, kind;
+    if (nFree === 1) {
+      const w = axisOf(mg.free);
+      data = RAPIER.JointData.revoluteWithAxes(a1, a2, w.clone().applyQuaternion(oQ.clone().invert()), w.clone().applyQuaternion(slave.curQ.clone().invert()));
+      kind = 'hinge';
+    } else if (nFree > 1) {
+      data = RAPIER.JointData.spherical(a1, a2); kind = 'ball';
+    } else if (nSlide >= 1 && !master) {
+      const w = axisOf(mg.tfree).normalize().applyQuaternion(slave.curQ.clone().invert());
+      data = RAPIER.JointData.prismatic(a1, a2, w); kind = 'slide';
+    } else {
+      data = RAPIER.JointData.fixed(a1, rq(oQ.clone().invert().multiply(qMag)), a2, rq(slave.curQ.clone().invert().multiply(qMag)));
+      kind = 'weld';
+    }
+    const joint = this.world.createImpulseJoint(data, other, slave.body, false);
     joint.setContactsEnabled(false);   // welded parts overlap; they must not fight
-    this.joints.push({ joint, slave, master, breakStrength: mg.breakStrength || 0 });
-    if (!master && nFree === 0) slave.pinned = true;
+    if (kind === 'hinge' || kind === 'slide') {
+      if (mg.angleMin != null && mg.angleMax != null && kind === 'hinge') joint.setLimits(mg.angleMin, mg.angleMax);
+      if (mg.drive) joint.configureMotorVelocity(mg.drive * 0.1, 50 * slave.mass);
+      else if (mg.restore) joint.configureMotorPosition(0, mg.restore * slave.mass * 2, (mg.friction || 1) * slave.mass * 0.5);
+      else if (mg.friction) joint.configureMotorVelocity(0, mg.friction * 0.1 * slave.mass);
+    }
+    const rec = { joint, slave, master, kind, anchor: master ? null : other, breakStrength: mg.breakStrength || 0, spec: mg };
+    this.joints.push(rec);
+    this.pinCheck(slave);
+    return rec;
+  }
+
+  // Held fast to the world (no hinge or slide): Anne cannot pull it loose.
+  pinCheck(e) {
+    e.pinned = this.joints.some((j) => j.joint && j.slave === e && !j.master && j.kind === 'weld');
+  }
+
+  removeJoint(j) {
+    if (!j.joint) return;
+    this.world.removeImpulseJoint(j.joint, true);
+    if (j.anchor) this.world.removeRigidBody(j.anchor);
+    j.joint = null; j.anchor = null;
+    this.pinCheck(j.slave);
+  }
+
+  // ---------------------------------------------------------------- trigger actions
+  // For the trigger system (GameActions.cpp: SET_PHYSICS, MAGNET): objects by name.
+  body(name) {
+    if (!this.byName) this.byName = new Map(this.entries.map((e) => [e.inst.name, e]));
+    return this.byName.get(name) || null;
+  }
+
+  // A named helper's placement ({pos:[x,y,z], rot:[[...]]}), e.g. an Emit* or TeleportDest*.
+  marker(name) { return this.markers[name] || null; }
+
+  // SET_PHYSICS Frozen:true: held still where it is (a fixed body) until unfrozen.
+  freeze(name) {
+    const e = this.body(name);
+    if (!e || e.frozen) return !!e;
+    if (this.hand.holding === e) this.handRelease();
+    if (this.held?.entry === e) this.release();
+    e.body.setBodyType(RAPIER.RigidBodyType.Fixed, false);
+    e.frozen = true;
+    return true;
+  }
+
+  // SET_PHYSICS Frozen:false: simulated again (and woken).
+  unfreeze(name) {
+    const e = this.body(name);
+    if (!e) return false;
+    if (e.frozen) { e.body.setBodyType(RAPIER.RigidBodyType.Dynamic, true); e.frozen = false; }
+    e.body.wakeUp();
+    this.live.add(e);
+    return true;
+  }
+
+  // SET_PHYSICS Impulse: an impulse (N·s, game space) at `point` (default: its centre).
+  push(name, impulse, point = null) {
+    const e = this.body(name);
+    if (!e) return false;
+    this.unfreeze(name);
+    const t = e.body.translation();
+    e.body.applyImpulseAtPoint({ x: impulse.x, y: impulse.y, z: impulse.z }, point || t, true);
+    return true;
+  }
+
+  // SET_PHYSICS Impulse with an Emitter: `push` N·s along the emitter's +Y, from its position.
+  pushFrom(name, emitterName, push) {
+    const em = this.body(emitterName) || this.marker(emitterName);
+    if (!em) return false;
+    let pos, dir;
+    if (em.body) { const t = em.body.translation(); pos = new THREE.Vector3(t.x, t.y, t.z); dir = new THREE.Vector3(0, 1, 0).applyQuaternion(em.curQ); }
+    else { pos = new THREE.Vector3(...em.pos); dir = new THREE.Vector3(em.rot[0][1], em.rot[1][1], em.rot[2][1]); }
+    return this.push(name, dir.multiplyScalar(push), pos);
+  }
+
+  // SET_PHYSICS X/Y/Z: set its velocity (m/s), e.g. the as2 elevator.
+  setVelocity(name, v) {
+    const e = this.body(name);
+    if (!e) return false;
+    this.unfreeze(name);
+    e.body.setLinvel({ x: v.x, y: v.y, z: v.z }, true);
+    return true;
+  }
+
+  // Move it (and stop it) at pos, optionally turned to rot (a THREE.Quaternion).
+  teleport(name, pos, rot = null) {
+    const e = this.body(name);
+    if (!e) return false;
+    e.body.setTranslation({ x: pos.x, y: pos.y, z: pos.z }, true);
+    if (rot) e.body.setRotation(rq(rot), true);
+    e.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+    e.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    e.curP.set(pos.x, pos.y, pos.z); e.prevP.copy(e.curP);
+    if (rot) { e.curQ.copy(rot); e.prevQ.copy(rot); }
+    this.live.add(e);
+    return true;
+  }
+
+  // Locked doors: a weld to the world holds them. Unlocking removes the object's welds
+  // (its hinge, if it has one, then swings free); locking welds it where it is now.
+  setMagnetLocked(name, locked) {
+    const e = this.body(name);
+    if (!e) return false;
+    const welds = this.joints.filter((j) => j.joint && j.slave === e && j.kind === 'weld' && !j.master);
+    if (!locked) { welds.forEach((j) => this.removeJoint(j)); e.body.wakeUp(); this.live.add(e); return true; }
+    if (!welds.length) this.addMagnet({ pos: e.curP.toArray(), rot: [[1, 0, 0], [0, 1, 0], [0, 0, 1]], free: [false, false, false] }, e, null);
+    return true;
+  }
+
+  // The MAGNET action: replace the object's world magnets with a new one (spec as in
+  // physics.json: free, tfree, drive, friction, restore, angleMin/Max, breakStrength;
+  // pos/rot default to the object's current pose), or with enable:false just remove them.
+  setMagnet(name, spec = {}) {
+    const e = this.body(name);
+    if (!e) return false;
+    if (this.hand.holding === e) this.handRelease();
+    if (this.held?.entry === e) this.release();
+    this.joints.filter((j) => j.joint && j.slave === e && !j.master).forEach((j) => this.removeJoint(j));
+    if (spec.enable === false) { e.body.wakeUp(); this.live.add(e); return true; }
+    const R = new THREE.Matrix4().makeRotationFromQuaternion(e.curQ).elements;
+    this.addMagnet({
+      pos: e.curP.toArray(), rot: [[R[0], R[4], R[8]], [R[1], R[5], R[9]], [R[2], R[6], R[10]]],
+      free: [false, false, false], tfree: [false, false, false], ...spec,
+    }, e, null);
+    e.body.wakeUp(); this.live.add(e);
+    return true;
   }
 
   // Let the game know about its guns and dinosaurs.
@@ -325,7 +483,7 @@ export class Physics {
     if (this.held) { this.release(); return true; }
     const e = this.bodyAhead(player);
     if (!e) return false;
-    if (e.mass >= LIFT_MAX || e.pinned) { this.onHint?.(e.pinned ? 'It will not come loose' : 'Too heavy to lift', 1.5); return true; }
+    if (e.mass >= LIFT_MAX || e.pinned || e.frozen) { this.onHint?.(e.pinned || e.frozen ? 'It will not come loose' : 'Too heavy to lift', 1.5); return true; }
     const t = e.body.translation(), r = e.body.rotation();
     const { origin } = this.eyeRay(player);
     const yawQ = _q.setFromAxisAngle(_v.set(0, 0, 1), player.yaw);
@@ -691,11 +849,7 @@ export class Physics {
     b.applyImpulseAtPoint({ x: dir.x * j, y: dir.y * j, z: Math.max(0, dir.z) * j + j * 0.1 }, p, true);
     // A breakable magnet lets go when shot hard enough.
     for (const jt of this.joints) {
-      if (jt.joint && jt.breakStrength > 0 && (jt.slave === e || jt.master === e) && push >= jt.breakStrength) {
-        this.world.removeImpulseJoint(jt.joint, true);
-        jt.joint = null;
-        jt.slave.pinned = false;
-      }
+      if (jt.joint && jt.breakStrength > 0 && (jt.slave === e || jt.master === e) && push >= jt.breakStrength) this.removeJoint(jt);
     }
     return true;
   }
@@ -789,7 +943,6 @@ export class Physics {
   impacts() {
     const cb = this.onImpact;
     this.events.drainContactForceEvents((ev) => {
-      if (!cb) return;
       const c1 = this.world.getCollider(ev.collider1()), c2 = this.world.getCollider(ev.collider2());
       const b1 = c1?.parent(), b2 = c2?.parent();
       const e1 = b1 && this.byHandle.get(b1.handle), e2 = b2 && this.byHandle.get(b2.handle);
@@ -798,6 +951,11 @@ export class Physics {
       const other = e === e1 ? e2 : e1;
       const mass = other ? Math.min(e.mass, other.mass) : e.mass;
       const impulse = ev.totalForceMagnitude() * STEP;
+      // A breakable magnet lets go under a hard enough knock.
+      for (const j of this.joints) {
+        if (j.joint && j.breakStrength > 0 && (j.slave === e1 || j.slave === e2) && impulse > j.breakStrength) this.removeJoint(j);
+      }
+      if (!cb) return;
       const v = e.body.linvel();
       cb({
         bodyA: b1, bodyB: b2,
