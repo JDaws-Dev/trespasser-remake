@@ -22,7 +22,7 @@ const ALL = 0, STEP_ORDER = 1, STEP_RANDOM = 2, SEQ_ORDER = 3, SEQ_RANDOM = 4, S
 
 const db = (v) => Math.pow(10, v / 20);
 const rand = (a, b) => a + Math.random() * (b - a);
-const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _q = new THREE.Quaternion(), _m = new THREE.Matrix4();
+const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3(), _q = new THREE.Quaternion(), _q2 = new THREE.Quaternion(), _m = new THREE.Matrix4();
 
 // The tutorial's key names, for this port's controls (input.js / hand.js).
 const REWRITE = TOUCH ? [
@@ -158,6 +158,7 @@ export class Triggers {
     this.lastHeld = new Set();
     this.dinoState = new Map(this.game.dinos.map((d) => [d, { alive: d.alive, awake: d.awake, hp: d.hp }]));
     this.wrapGameEvents();
+    this.makeAnimated(logic.anim || {});
     this.cheats = new Cheats(this);
     this.ready = true;
   }
@@ -260,6 +261,7 @@ export class Triggers {
     this.player = player || this.player;
     this.updateAudio();
     this.showText(dt);
+    this.updateAnimated();
     if (this.game.dead || this.game.ui?.paused || this.leaving) return;
     this.cheats?.update(dt);
     this.acc = Math.min(this.acc + dt, 0.25);
@@ -292,7 +294,8 @@ export class Triggers {
     const act = t.c.TriggerActivate;
     const check = (id, p, type, r = 0.3) => {
       if (!p) { if (t.contained.has(id)) this.moved(t, id, type, false); return; }
-      const inn = this.inside(t, p, r);
+      const e = !t.point && typeof id !== 'string' ? id : !t.point && typeof id === 'string' ? this.bodyByName.get(id) : null;
+      const inn = e?.inst && e.body ? this.overlapsBody(t, e) : this.inside(t, p, r);
       if (inn !== t.contained.has(id)) this.moved(t, id, type, inn);
     };
     if (act) {
@@ -306,6 +309,8 @@ export class Triggers {
     if (t.want.player) check('Anne', this.anneCentre(_v2), 'player');
     if (t.want.creature) for (const d of this.game.dinos) check(d, d.pos, 'creature');
     if (t.want.object && this.physics) {
+      // Anne's hand is a tangible, moveable box too (the as2 elevator's call buttons).
+      check('$AnneHand+Anne', this.locate('$AnneHand+Anne', _v2), 'object', 0.02);
       // Tangible moveable objects: those moving now, and those already inside.
       for (const e of this.physics.live) check(e, e.curP, 'object', e.radius);
       for (const e of t.contained) if (e.curP && !this.physics.live.has(e)) check(e, e.curP, 'object', e.radius);
@@ -316,6 +321,21 @@ export class Triggers {
         if (t.always[type]) { this.attempt(t); break; }
       }
     }
+  }
+
+  // A non-point trigger against a body (bIntersects): its box's corners and centre
+  // tested against the volume, and the volume's centre against its box.
+  overlapsBody(t, e) {
+    const b = this.physics.modelBounds(e.inst.model), s = e.scale || 1;
+    const q = e.curQ, c = e.curP;
+    for (let i = 0; i < 9; i++) {
+      if (i === 8) _v3.copy(b.min).add(b.max).multiplyScalar(0.5);
+      else _v3.set(i & 1 ? b.max.x : b.min.x, i & 2 ? b.max.y : b.min.y, i & 4 ? b.max.z : b.min.z);
+      _v3.multiplyScalar(s).applyQuaternion(q).add(c);
+      if (this.inside(t, _v3)) return true;
+    }
+    _v3.copy(t.origin).sub(c).applyQuaternion(_q2.copy(q).invert()).divideScalar(s);
+    return b.containsPoint(_v3);
   }
 
   // CLocationTrigger::Evaluate: something crossed the volume's boundary.
@@ -365,6 +385,9 @@ export class Triggers {
       P.world.contactPair(ca, cb, (m) => { if (m.numContacts() > 0) hit = true; });
       return hit;
     };
+    // One element: anything bumping it. Anne counts by her feet (the temple's floor
+    // plates, a chair she walks into), as her body collides in the original.
+    if (!n2 && this.nearBox(n1, this.player.pos, 0.15)) return true;
     if (e1 && !n2) {
       // A button: anything touching it that moves it or is the hand.
       for (const ca of collidersOf(e1)) {
@@ -711,6 +734,95 @@ export class Triggers {
     return time;
   }
 
+  // ---------------------------------------------------------------- animated textures
+  // CMeshAnimating: an object cycling through its Anim00.. textures every Interval
+  // seconds (keypad digits lighting, the Town's map, the Cray's screens and lights).
+  // The level draws objects as shared InstancedMeshes, so each animated object is
+  // taken out into meshes of its own, with its own materials to swap textures on.
+  makeAnimated(anim) {
+    this.animated = new Map();
+    const targets = new Set(this.list.flatMap((t) => t.actions.filter((a) => a.type === 'SET_ANIMATE_TEXTURE').map((a) => a.Target)));
+    const loader = new THREE.TextureLoader();
+    for (const [name, spec] of Object.entries(anim)) {
+      if (!targets.has(name)) continue;
+      const inst = this.instByName.get(name);
+      const refs = inst && this.game.refs[inst.index];
+      if (!refs?.length) { this.miss('ANIM_TEX object not drawn', name); continue; }
+      const parts = this.game.info.models[inst.model]?.parts || [];
+      const first = spec.frames[0];
+      const meshes = [];
+      refs.forEach(({ mesh, i }, k) => {
+        // The animated surface: AnimSubMaterial, else those drawn with frame 0's
+        // texture, else all of them.
+        const tex = parts[k]?.texture;
+        const animate = spec.surface >= 0 ? k === spec.surface : !first || !parts.some((p) => p.texture === first) || tex === first;
+        const m = new THREE.Mesh(mesh.geometry, animate ? mesh.material.clone() : mesh.material);
+        m.matrixAutoUpdate = false;
+        mesh.getMatrixAt(i, m.matrix);
+        m.castShadow = mesh.castShadow; m.receiveShadow = mesh.receiveShadow;
+        m.frustumCulled = false;
+        mesh.parent.add(m);
+        meshes.push({ m, mesh, i, animate });
+        mesh.setMatrixAt(i, _m.makeScale(0, 0, 0)); mesh.instanceMatrix.needsUpdate = true;
+      });
+      const base = meshes.find((x) => x.animate)?.m.material.map;
+      const frames = spec.frames.map((id) => {
+        if (!id) return null;
+        const t = loader.load(`levels/${this.level}/tex/${id}.png`);
+        if (base) { t.wrapS = base.wrapS; t.wrapT = base.wrapT; t.flipY = base.flipY; t.colorSpace = base.colorSpace; t.anisotropy = base.anisotropy; }
+        else t.colorSpace = THREE.SRGBColorSpace;
+        return t;
+      });
+      const a = { name, spec, meshes, frames, frame: -1, step: spec.interval > 0 ? spec.interval : Infinity, next: 0, track2: spec.trackTwo || 0, freeze: spec.freeze ?? -1 };
+      a.next = this.t + a.step;
+      this.animated.set(name, a);
+      this.setFrame(a, 0);
+    }
+  }
+
+  setFrame(a, f) {
+    if (f === a.frame || f < 0 || f >= a.frames.length) return;
+    a.frame = f;
+    const tex = a.frames[f];
+    if (!tex) return;
+    for (const { m, animate } of a.meshes) if (animate) { m.material.map = tex; m.material.needsUpdate = true; }
+  }
+
+  // CMeshAnimating::Render: step through the frames at the interval (to TrackTwo after
+  // the last), stopping at the freeze frame; the meshes follow the object if it moves.
+  updateAnimated() {
+    for (const a of this.animated?.values() || []) {
+      for (const x of a.meshes) {
+        x.mesh.getMatrixAt(x.i, _m);
+        if (_m.elements[0] || _m.elements[1] || _m.elements[2]) {   // the object moved (physics wrote it)
+          x.m.matrix.copy(_m);
+          x.mesh.setMatrixAt(x.i, _m.makeScale(0, 0, 0)); x.mesh.instanceMatrix.needsUpdate = true;
+        }
+      }
+      if (a.step === Infinity || this.t < a.next) continue;
+      let f = a.frame;
+      while (a.next <= this.t) {
+        a.next += a.step;
+        if (++f >= a.frames.length) f = a.track2;
+        else if (f === a.track2 && a.track2 > 0) f = 0;
+        if (a.next + a.step * 30 < this.t) a.next = this.t + a.step;
+      }
+      this.setFrame(a, f);
+      if (f === a.freeze) a.step = Infinity;
+    }
+  }
+
+  // CAnimateTextureAction: FreezeFrame, TrackTwo, Frame, Interval (<0: hold).
+  do_SET_ANIMATE_TEXTURE(a) {
+    const an = this.animated?.get(a.Target);
+    if (!an) { this.miss('SET_ANIMATE_TEXTURE', a.Target); return 0; }
+    if (a.FreezeFrame !== undefined && a.FreezeFrame > -2) an.freeze = a.FreezeFrame;
+    if (a.TrackTwo !== undefined && a.TrackTwo > -1) an.track2 = a.TrackTwo;
+    if (a.Frame !== undefined && a.Frame >= 0) this.setFrame(an, a.Frame);
+    if (a.Interval !== undefined) { an.step = a.Interval < 0 ? Infinity : a.Interval > 0 ? a.Interval : an.step; an.next = this.t + an.step; }
+    return 0;
+  }
+
   do_SET_HINT(a) { this.hintId = a.HintID; return 0; }
 
   do_LOAD_LEVEL(a) {
@@ -903,7 +1015,13 @@ export class Triggers {
       return 0;
     }
     const inst = this.instByName.get(a.ObjectName);
-    if (!inst) { this.miss('HIDESHOW', a.ObjectName); return 0; }
+    if (!inst) {
+      // Never drawn and not solid (ij's HideMe-00, an invisible marker): only its state changes.
+      if (!this.objects[a.ObjectName]) { this.miss('HIDESHOW', a.ObjectName); return 0; }
+      const hidden = this.hidden.has(a.ObjectName), show = a.Toggle ? hidden : a.Visible !== false;
+      if (show) this.hidden.delete(a.ObjectName); else this.hidden.set(a.ObjectName, []);
+      return 0;
+    }
     const refs = this.game.refs[inst.index] || [];
     const hidden = this.hidden.has(inst.name);
     const show = a.Toggle ? hidden : a.Visible !== false;

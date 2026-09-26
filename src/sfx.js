@@ -152,7 +152,7 @@ export class Sfx {
 
   // ------------------------------------------------------------------ playing
   play(name, opts, kind) {
-    this.log.push({ t: this.time, name, kind });
+    this.log.push({ t: this.time, name, kind, gain: opts.gain, loop: !!opts.loop });
     if (this.log.length > 200) this.log.shift();
     return this.audio.playFx(name, opts);
   }

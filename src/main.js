@@ -132,7 +132,7 @@ window.__game = game;
 game.physics = physics;
 physics.attachGame(game);
 new Triggers({ game, physics, player, audio, level: LEVEL, groundAt });   // the level's triggers (logic.json): game.logic
-const handControls = new HandControls({ canvas: renderer.domElement, physics, input, touch: input.touch });
+const handControls = new HandControls({ canvas: renderer.domElement, physics, input, touch: input.touch, camera, world });
 const sfx = window.__sfx = new (await import('./sfx.js')).Sfx({ audio, game, physics, info, groundAt });   // collisions, footsteps, Anne's voice
 
 const clock = new THREE.Clock();
@@ -143,14 +143,22 @@ const frame = () => {
   const dt = Math.min(clock.getDelta(), 0.05);
   const move = input.poll(dt);
   gaitUniforms.uTime.value = clock.elapsedTime;
-  // The hand key raises Anne's hand before the game reads Grab / Use.
+  // The hand key raises Anne's hand before the game reads Grab / Use. In the modern
+  // hand style the left button is look-and-click instead, the right button turns what
+  // she holds, and on touch GRAB clicks on what is under the crosshair.
   const hc = handControls.poll(move);
-  physics.setArm(hc.hand, player);
+  const modern = physics.handStyle === 'modern';
+  if (modern) { if (move.touch && move.pickup) hc.click = true; move.pickup = false; }
+  physics.setArm(!modern && hc.hand, player);
   game.update(dt, player, move);
 
+  let viewHeld = false;
+  if (modern) viewHeld = physics.modern.update(player, { click: hc.click, down: hc.hand || (move.touch && move.pickup), rmb: hc.rmb, look: move.look, wheel: hc.wheel, dt });
   // With the hand raised the mouse (or right stick) moves Anne's hand, or with
   // Shift / Alt turns her wrist, instead of turning her head.
-  if (physics.hand.aiming) {
+  if (viewHeld) {
+    // Turning what she holds: the view stays put.
+  } else if (physics.hand.aiming) {
     if (hc.rotate) physics.rotateWrist(move.look.x, move.look.y, hc.roll, hc.reset);
     else physics.moveHand(move.look.x, move.look.y, player);
   } else {
@@ -161,7 +169,7 @@ const frame = () => {
   player.crouch = THREE.MathUtils.lerp(player.crouch || 0, hc.crouch || physics.hand.autoCrouch ? CROUCH : 0, Math.min(1, dt * 10));
 
   // Walk relative to where Anne faces (yaw 0 looks along +Y).
-  const speed = (move.run && !hc.rotate ? RUN : WALK) * (hc.crouch ? 0.5 : 1);
+  const speed = (move.run && (modern || !hc.rotate) ? RUN : WALK) * (hc.crouch ? 0.5 : 1);
   const fx = -Math.sin(player.yaw), fy = Math.cos(player.yaw);
   player.vz -= GRAVITY * dt;
   const delta = new THREE.Vector3(

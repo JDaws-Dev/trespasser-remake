@@ -23,7 +23,7 @@ loads next, the F1 hint strings (Trespass/res/USA_hints.rc2) and every sample na
 """
 import json, os, re, struct, sys
 from groff import Groff, read_value_table, properties
-from convert_level import read_mesh, read_raw_mesh, euler_matrix, DATA, OUT
+from convert_level import read_mesh, read_raw_mesh, euler_matrix, DATA, OUT, Textures, write_png
 
 HINTS = os.path.expanduser('~/Games/Trespasser/src-dev/jp2_pc/Source/Trespass/res/USA_hints.rc2')
 LEVELS = ['be', 'jr', 'ij', 'it', 'lab', 'as', 'as2', 'sum']
@@ -129,12 +129,15 @@ def export(level):
         box_cache[seh_obj] = box
         return box
 
+    anchors = set()   # what animals are leashed to (their own StayNear/StayAway targets)
     for i in range(count):
         seh_obj, name_h, px, py, pz, rx, ry, rz, scale, attr, _one = struct.unpack_from('<2I7f2I', reg, 4 + 44 * i)
         name = g.symbols.get(name_h, '')
         p = properties(values, attr)
         p = p if isinstance(p, dict) else {}
         klass = p.get('Class')
+        if klass == 'CAnimal':
+            anchors.update(v for k, v in p.items() if k in ('StayNearTarget', 'StayAwayTarget') and isinstance(v, str))
         rec = dict(pos=[round(px, 4), round(py, 4), round(pz, 4)],
                    rot=[[round(c, 6) for c in row] for row in euler_matrix(rx, ry, rz)],
                    scale=round(scale, 5), cls=klass, seh=seh_obj)
@@ -164,7 +167,7 @@ def export(level):
         triggers.append(t)
 
     # Every object the logic names, with its placement and mesh box.
-    wanted = set()
+    wanted = set(anchors)
     for t in triggers:
         c = t['cond']
         for k in ('TriggerActivate', 'Element1', 'Element2'):
@@ -192,6 +195,55 @@ def export(level):
                     by_material[p['SoundMaterial']].append(dict(
                         name=g.symbols.get(name_h, ''), pos=[round(px, 4), round(py, 4), round(pz, 4)],
                         rot=[[round(c, 6) for c in row] for row in euler_matrix(rx, ry, rz)], scale=round(scale, 5), box=box))
+    # Animating textures (GroffIO.cpp: Anim00.. frames, Interval default 1/25 s, TrackTwo,
+    # FreezeFrame, AnimSubMaterial), for the objects SET_ANIMATE_TEXTURE targets: each
+    # frame's texture id, its PNG written into tex/ if the level converter didn't.
+    targets = {a['Target'] for t in triggers for a in t['actions'] if a['type'] == 'SET_ANIMATE_TEXTURE' and isinstance(a.get('Target'), str)}
+    anim, anim_missing = {}, []
+    if targets:
+        tx = Textures(level)
+        # Anim names are bare file names; the pack's textures are keyed by the full
+        # material name (Map\\it\\SMap01_t2.bmp): match on the file name.
+        full = {}
+        for sym in g.symbols.values():
+            full.setdefault(sym.replace('\\', '/').split('/')[-1].lower(), sym)
+        dirs = sorted({sym[:sym.replace('\\', '/').rfind('/') + 1] for sym in g.symbols.values()
+                       if sym.lower().startswith('map') and '\\' in sym})
+        texdir = os.path.join(OUT, level, 'tex')
+        os.makedirs(texdir, exist_ok=True)
+        for i in range(count):
+            seh_obj, name_h, *_r, attr, _one = struct.unpack_from('<2I7f2I', reg, 4 + 44 * i)
+            name = g.symbols.get(name_h, '')
+            if name not in targets or name in anim:
+                continue
+            p = properties(values, attr)
+            p = p if isinstance(p, dict) else {}
+            diffuse = p.get('Diffuse', 1.0)
+            frames = []
+            for k in range(64):
+                tex = p.get('Anim%02d' % k)
+                if not isinstance(tex, str):
+                    break
+                bump = p.get('AnimB%02d' % k) if isinstance(p.get('AnimB%02d' % k), str) else ''
+                tex, bump = full.get(tex.lower(), tex), full.get(bump.lower(), bump) if bump else ''
+                tid = None
+                names = [tex] + [d + tex.replace('\\', '/').split('/')[-1] for d in dirs]
+                for cand in [(n + bump, d) for n in names for d in (diffuse, 1.0)] + [(n, d) for n in names for d in (diffuse, 1.0)]:
+                    if Textures.texture_id(*cand) in tx.entries:
+                        tid = Textures.texture_id(*cand)
+                        break
+                if tid is None:
+                    anim_missing.append(f'{name}:{tex}')
+                    frames.append(None)
+                    continue
+                path = os.path.join(texdir, '%08x.png' % tid)
+                if not os.path.exists(path):
+                    e = tx.entries[tid]
+                    write_png(path, e['w'], e['h'], tx.rgba(e))
+                frames.append('%08x' % tid)
+            if frames:
+                anim[name] = dict(frames=frames, interval=p.get('Interval', 0.04), trackTwo=p.get('TrackTwo', 0),
+                                  freeze=p.get('FreezeFrame', -1), surface=p.get('AnimSubMaterial', 0) - 1 if p.get('AnimSubMaterial') else -1)
     objects = {}
     missing = []
     for n in sorted(wanted):
@@ -215,13 +267,15 @@ def export(level):
         for a in t['actions']:
             stats['actions'][a['type']] = stats['actions'].get(a['type'], 0) + 1
     logic = dict(level=level, next=nxt, start=start, triggers=triggers, objects=objects,
-                 teleports=teleports, materials=by_material, hints={str(k): v for k, v in hints.items() if k >= 100},
+                 teleports=teleports, materials=by_material, anim=anim, hints={str(k): v for k, v in hints.items() if k >= 100},
                  samples=samples, stats=stats, undecoded=undecoded, missingObjects=missing)
     out = os.path.join(OUT, level)
     os.makedirs(out, exist_ok=True)
     json.dump(logic, open(os.path.join(out, 'logic.json'), 'w'), separators=(',', ':'))
     print(f"{level}: {len(triggers)} triggers {stats['triggers']}")
     print(f"   actions {dict(sorted(stats['actions'].items(), key=lambda kv: -kv[1]))}")
+    if targets:
+        print(f"   animated textures: {len(anim)} of {len(targets)} targets, frames missing {anim_missing[:6]}")
     print(f"   next={nxt} objects={len(objects)} teleports={len(teleports)} samples={len(samples)} "
           f"undecoded={len(undecoded)} missing={missing[:8]}{'...' if len(missing) > 8 else ''}")
 

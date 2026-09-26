@@ -161,7 +161,13 @@ export class DinoAI {
     if (!d || !d.alive) return;
     if (pos) d.pos.set(pos.x, pos.y, (pos.z ?? 0));
     if (yaw !== null && yaw !== undefined) d.yaw = yaw;
-    if (pos || d.hidden) d.pos.z = this.game.groundAt(d.pos.x, d.pos.y) + d.foot;
+    if (pos || d.hidden) {
+      // Onto whatever floor is there (the summit helipad is a floor above the terrain),
+      // looking from a little above where the teleport left it.
+      const terrain = this.game.groundAt(d.pos.x, d.pos.y);
+      const from = Math.max(terrain, d.pos.z - d.foot) + 4;
+      d.pos.z = (this.groundUnder(d.pos.x, d.pos.y, from) ?? terrain) + d.foot;
+    }
     d.hidden = false;
     d.home.copy(d.pos);
     d.awake = true;
@@ -652,7 +658,16 @@ export class DinoAI {
     const flat = Math.hypot(dx, dy);
     if (flat > d.jaw + 0.9) return false;
     const fx = -Math.sin(d.yaw), fy = Math.cos(d.yaw);
-    return (dx * fx + dy * fy) / (flat || 1) > 0.45;
+    if ((dx * fx + dy * fy) / (flat || 1) <= 0.45) return false;
+    // Not through a wall, a crate or a fence.
+    const bvh = this.game.collider?.boundsTree;
+    if (!bvh) return true;
+    _ray.origin.set(d.pos.x, d.pos.y, d.pos.z);
+    _ray.direction.set(dx, dy, player.pos.z + 1.2 - d.pos.z);
+    const len = _ray.direction.length();
+    _ray.direction.divideScalar(len || 1);
+    const hit = bvh.raycastFirst(_ray, THREE.DoubleSide, 0, len);
+    return !hit || Math.abs(hit.face?.normal?.z ?? 0) >= d.minNormalZ;
   }
 
   // Sedated: limp on its side where it stands.

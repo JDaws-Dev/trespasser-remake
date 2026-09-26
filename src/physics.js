@@ -9,6 +9,7 @@
 // 0-10 `Friction` (default 5); bounce is `Elasticity` (default 0.2).
 import RAPIER from '@dimforge/rapier3d-compat';
 import * as THREE from 'three';
+import { ModernHand } from './modernhand.js';
 
 const STEP = 1 / 60;
 const MAX_STEPS = 4;                  // per frame, so a slow frame never spirals
@@ -16,6 +17,7 @@ const LIFT_MAX = 100;                 // kg: PlayerSettings.fMaxMassPickup in th
 const REACH = 2.6;                    // metres from the eye
 const PLAYER_R = 0.3, PLAYER_H = 1.7;
 const DENSITY = 0.1, FRICTION = 5, ELASTICITY = 0.2;
+const STATIC = 0x0002;                // collision group of the static world
 // The hand (PlayerSettings in Player.cpp): reach, angle limits, grab distance, throw.
 const HAND_REACH = 0.8, HAND_REACH_MAX = 0.95, HAND_GRAB = 0.2;
 const HAND_PITCH = 75 * Math.PI / 180, HAND_TURN = 35 * Math.PI / 180;
@@ -45,7 +47,7 @@ export async function createPhysics(opts) {
   const load = (f) => fetch(`levels/${opts.level}/${f}`).then((r) => (r.ok ? r.json() : null)).catch(() => null);
   const [extra, colliders, logic] = await Promise.all([load('physics.json'), load('colliders.json'), load('logic.json')]);
   return new Physics({ ...opts, extra: extra || { boxes: {}, magnets: [] }, colliders: colliders || { solids: [], markers: {} },
-    logicTargets: logicTargets(logic) });
+    logicTargets: logicTargets(logic), logic });
 }
 
 // Objects the level's triggers act on physically (SET_PHYSICS / MAGNET targets, collision
@@ -66,8 +68,8 @@ function logicTargets(logic) {
 }
 
 export class Physics {
-  constructor({ info, terrain, partGeoms, refs, extra, colliders, logicTargets = new Set() }) {
-    Object.assign(this, { info, refs, partGeoms });
+  constructor({ info, terrain, partGeoms, refs, extra, colliders, logicTargets = new Set(), logic = null }) {
+    Object.assign(this, { info, refs, partGeoms, logic });
     this.world = new RAPIER.World({ x: 0, y: 0, z: -9.81 });
     this.world.timestep = STEP;
     this.boxes = extra.boxes;
@@ -177,10 +179,31 @@ export class Physics {
 
     // Everything starts asleep, where the level put it: it wakes when touched.
     for (const e of this.entries) e.body.sleep();
+    // The static world is its own collision group (hinged things can be let off it).
+    for (let i = 0; i < ground.numColliders(); i++) ground.collider(i).setCollisionGroups((STATIC << 16) | 0xffff);
     // One step before Anne's collider exists: a parentless collider added to a world
     // that has never stepped leaves Rapier 0.21's broad phase blind to everything.
     this.world.step();
     for (const e of this.entries) e.body.sleep();   // the step's new contacts woke them
+    // Hinged and sliding things (gates, doors) that the level sets into the ground or a
+    // wall would be jammed there: they swing free of the static world (their magnet
+    // holds them in place anyway), still colliding with everything that moves.
+    this.unjammed = [];
+    for (const j of this.joints) {
+      if (j.kind !== 'hinge' && j.kind !== 'slide') continue;
+      const b = j.slave.body;
+      let jammed = false;
+      for (let i = 0; i < b.numColliders() && !jammed; i++) {
+        const c = b.collider(i);
+        this.world.contactPairsWith(c, (o) => {
+          if (jammed || o.parent()?.handle !== ground.handle) return;
+          this.world.contactPair(c, o, (m) => { for (let k = 0; k < m.numContacts(); k++) if (m.contactDist(k) < -0.02) jammed = true; });
+        });
+      }
+      if (!jammed) continue;
+      for (let i = 0; i < b.numColliders(); i++) b.collider(i).setCollisionGroups((0x0001 << 16) | (0xffff & ~STATIC));
+      this.unjammed.push(j.slave.inst.name);
+    }
 
     // --- CEntityAttached (the lab vault's lock lights and hand reader): drawn riding on
     // their Target object, wherever its body goes.
@@ -470,9 +493,36 @@ export class Physics {
     return true;
   }
 
+  // Hand style: 'modern' (look at a thing and click: Half-Life 2 / Amnesia style, the
+  // default) or 'classic' (the original's hand, moved with the mouse). Kept per browser.
+  get handStyle() {
+    if (!this._handStyle) {
+      let s = null;
+      try { s = localStorage.getItem('trespasser.handStyle'); } catch (e) { /* storage blocked */ }
+      this._handStyle = s === 'classic' ? 'classic' : 'modern';
+      document.body.classList.toggle('modernhand', this._handStyle === 'modern');
+    }
+    return this._handStyle;
+  }
+
+  setHandStyle(style) {
+    style = style === 'classic' ? 'classic' : 'modern';
+    if (style === this.handStyle) return style;
+    // Let go of everything the other style was doing.
+    this.modern?.reset();
+    if (this.hand.holding) this.handRelease();
+    if (this.held) this.release();
+    this.setArm(false);
+    this._handStyle = style;
+    try { localStorage.setItem('trespasser.handStyle', style); } catch (e) { /* storage blocked */ }
+    document.body.classList.toggle('modernhand', style === 'modern');
+    return style;
+  }
+
   // Let the game know about its guns and dinosaurs.
   attachGame(game) {
     this.game = game;
+    this.modern = new ModernHand(this, game);
     this.onHint = (t, s) => game.showHint(t, s);
     for (const p of game.pickups || []) {
       const e = this.byIndex.get(p.index);
@@ -563,17 +613,26 @@ export class Physics {
     const e = this.bodyAhead(player);
     if (!e) return false;
     if (e.mass >= LIFT_MAX || e.pinned || e.frozen) { this.onHint?.(e.pinned || e.frozen ? 'It will not come loose' : 'Too heavy to lift', 1.5); return true; }
-    const t = e.body.translation(), r = e.body.rotation();
-    const { origin } = this.eyeRay(player);
+    this.holdEntry(e, player);
+    return true;
+  }
+
+  // Take `e` into Anne's grip (carried in front of her). `grip`: the original's hand
+  // magnet for it ({rot: Quaternion, pos: Vector3}, object frame), to hold it as the
+  // original did (the modern hand snaps it to that).
+  holdEntry(e, player, grip = null) {
+    const r = e.body.rotation();
     const yawQ = _q.setFromAxisAngle(_v.set(0, 0, 1), player.yaw);
     this.held = {
-      entry: e, dist: THREE.MathUtils.clamp(_v2.set(t.x, t.y, t.z).distanceTo(origin), 0.7 + e.radius * 0.6, 1.2 + e.radius),
-      qRel: yawQ.clone().invert().multiply(new THREE.Quaternion(r.x, r.y, r.z, r.w)),
+      entry: e, grip,
+      // How it sits relative to her heading: as picked up, or turned so her hand, palm
+      // down and fingers ahead, holds it at its grip.
+      qRel: grip ? grip.rot.clone().invert() : yawQ.clone().invert().multiply(new THREE.Quaternion(r.x, r.y, r.z, r.w)),
     };
     this.hand.rotation.identity();   // the wrist turns it from how it was picked up
     e.body.setGravityScale(0, true);
     e.body.wakeUp();
-    return true;
+    this.live.add(e);
   }
 
   // Let go, with a velocity (a throw) or without (a drop).
@@ -606,15 +665,17 @@ export class Physics {
     // Within arm's reach of her right shoulder (about 0.85 m), along her view.
     const { dir } = this.eyeRay(player);
     if (this.swing.stage) dir.applyAxisAngle(_s.set(0, 0, 1), -this.swing.ax);   // swung across her
-    const target = this.hand.aiming ? this.handTarget(player, new THREE.Vector3())
+    const target = this.handStyle === 'modern' ? this.modern.holdPoint(player, h)
+      : this.hand.aiming ? this.handTarget(player, new THREE.Vector3())
       : this.shoulder(player).addScaledVector(dir, Math.min(0.85, 0.4 + h.entry.radius * 0.6));
     const t = b.translation();
     _v.set(target.x - t.x, target.y - t.y, target.z - t.z);
     // Snagged on something, or left behind for a moment: it slips from her hand.
     h.stuck = _v.length() > 1.6 ? (h.stuck || 0) + STEP : 0;
     if (h.stuck > 0.4) { this.release(); return; }
-    const vmax = 14 * Math.min(1, 30 / h.entry.mass);
-    _v.multiplyScalar(12);
+    // Flies there smoothly and settles without overshoot (a damped spring on velocity).
+    const vmax = 10 * Math.min(1, 30 / h.entry.mass);
+    _v.multiplyScalar(this.handStyle === 'modern' ? 9 : 12);
     if (_v.length() > vmax) _v.setLength(vmax);
     b.setLinvel(_v, true);
     // Keep the grip orientation, turning with Anne and with her wrist (Shift / Alt + mouse).
@@ -656,6 +717,7 @@ export class Physics {
   makeHand() {
     this.hand = {
       mode: 'look', target: new THREE.Vector3(), rotation: new THREE.Quaternion(), holding: null, stowed: false, aiming: false,
+      drag: null, press: null,   // modern hand: { point, normal } while dragging; { point, normal, time } per press
       ax: 0, ay: 0, reach: HAND_REACH, joint: null, active: false, cock: 0, pos: new THREE.Vector3(),
     };
     this.onHand = null;   // ({ type: 'grab' | 'release' | 'throw' | 'stow' | 'retrieve', entry }) => {}
@@ -1020,7 +1082,8 @@ export class Physics {
       }
       this.updateSwing();
       this.updateHeld(player);
-      this.updateHand(player);
+      if (this.handStyle === 'modern') this.modern?.step(player);
+      else this.updateHand(player);
       this.buoyancy();
       this.world.step(this.events);
       this.impacts();

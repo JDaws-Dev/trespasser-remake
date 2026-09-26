@@ -10,6 +10,7 @@ import { DinoAI } from './dinos.js';
 // Anne (Animate.cpp:326 defaults; the Player object overrides none of them): 100 HP,
 // 1 HP a second back while alive, no delay.
 const PLAYER_HP = 100, PLAYER_REGEN = 1;
+const PRESS_OUT = 0.35, PRESS_BACK = 0.3;   // keypad press: reach out and press, then return (seconds)
 // Falling (Animate.cpp:81, 283, 991): her 100 kg foot box's landing energy x 0.08
 // (fBIOMODEL_ADJUST_HACK) x 0.22 HP per joule, less a buffer as big as her maximum HP
 // (fCOLLISION_BUFFER 1) that soaks bumps: nothing below ~6 m, dead from ~12 m.
@@ -277,21 +278,40 @@ export class Game {
   flash(p) {
     const m = this.muzzle, held = this.holding ? this.anne?.held : this.hand;
     if (!held) return;
-    // The end of the barrel: the far end of the held gun along the view.
-    const box = new THREE.Box3().setFromObject(held);
-    if (box.isEmpty()) return;
+    // The end of the barrel: the held gun's vertex furthest along the view.
     const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion);
-    const c = box.getCenter(new THREE.Vector3());
-    const size = box.getSize(new THREE.Vector3());
-    const half = (Math.abs(fwd.x) * size.x + Math.abs(fwd.y) * size.y + Math.abs(fwd.z) * size.z) / 2;
-    m.sprite.position.copy(c).addScaledVector(fwd, half + 0.03);
-    m.light.position.copy(m.sprite.position).addScaledVector(fwd, 0.2);
-    const s = 0.28 + Math.min(0.3, (p.Damage || 20) / 120);
+    held.updateWorldMatrix(true, true);
+    const v = new THREE.Vector3(), tip = new THREE.Vector3();
+    let best = -Infinity;
+    held.traverse((o) => {
+      const pos = o.isMesh && o.geometry.getAttribute('position');
+      if (!pos) return;
+      for (let i = 0; i < pos.count; i++) {
+        v.fromBufferAttribute(pos, i).applyMatrix4(o.matrixWorld);
+        const k = v.dot(fwd);
+        if (k > best) { best = k; tip.copy(v); }
+      }
+    });
+    if (best === -Infinity) return;
+    // Kept on the gun as it kicks (placeMuzzle, each frame).
+    m.held = held;
+    m.local = held.worldToLocal(tip.addScaledVector(fwd, 0.04));
+    this.placeMuzzle();
+    const s = 0.16 + Math.min(0.2, (p.Damage || 20) / 200);
     m.sprite.scale.set(s, s, s);
     m.sprite.material.rotation = p.RandomRotate ? Math.random() * Math.PI * 2 : 0;
     m.sprite.visible = true;
     m.light.intensity = 40;
     m.until = performance.now() + 1000 * Math.max(0.05, p.MFlashDuration || 0);
+  }
+
+  placeMuzzle() {
+    const m = this.muzzle;
+    if (!m.held || !m.local) return;
+    m.held.updateWorldMatrix(true, false);
+    m.sprite.position.copy(m.local).applyMatrix4(m.held.matrixWorld);
+    const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion);
+    m.light.position.copy(m.sprite.position).addScaledVector(fwd, 0.2);
   }
 
   // Dinosaur d dies (triggers.js calls this too).
@@ -363,16 +383,42 @@ export class Game {
     this.hand.position.z = -0.55 + this.recoil * 0.08;
     this.hand.rotation.x = -Math.PI / 2 + this.recoil * 0.25;
     if (this.anne) {
-      // Her hand: at rest it hangs relaxed (the Natural shape) or sights the gun. In arm
-      // mode it follows the physical hand (physics.hand: palm target, wrist rotation in
-      // her view frame), open when empty, in the held object's grip shape when holding;
-      // stowing lowers the arm. With no gun, it holds what she carries (E-grab).
+      // Her hand: at rest it hangs relaxed (the Natural shape, out of view) or sights the
+      // gun. Stowing lowers it. On a door or lever being dragged it grips the grab point;
+      // pressing a keypad it reaches out, presses with a finger and comes back. In classic
+      // arm mode it follows the physical hand (open when empty, the held object's grip
+      // shape when holding). With no gun, it holds what she carries (E-grab, or the modern
+      // hold: the object springs from where it lay into her hand, so the hand goes out to
+      // it and comes back with it).
       let reach = null;
       const ph = this.physics, a = this.anne, hand = ph?.hand;
       const gripOf = (e) => (e?.inst ? a.reachFor(e.inst.name, ph.heldMatrix?.(new THREE.Matrix4()) || new THREE.Matrix4(), e.radius || 0.3).sub : a.poseIndex('Anne_Rock'));
+      const shoulder = ph?.shoulder ? ph.shoulder(player) : player.pos.clone().setZ(player.pos.z + 1.46);
+      if (hand?.press && hand.press.time !== this.pressSeen) {
+        this.pressSeen = hand.press.time;
+        this.pressT = 0;
+      }
+      if (this.pressT != null) this.pressT += dt;
+      if (this.pressT > PRESS_OUT + PRESS_BACK) this.pressT = null;
       if (hand && (hand.stowed || hand.mode === 'stow')) {
         reach = { stow: true };
-      } else if (hand && hand.mode === 'arm') {
+      } else if (hand?.drag?.point) {
+        const { point, normal } = hand.drag;
+        reach = { palm: point.clone().addScaledVector(normal, 0.03), rot: Anne.surfaceRot(point.clone().sub(shoulder), normal) };
+        a.setSubstitute(a.poseIndex('Anne_Rock'));
+      } else if (this.pressT != null && !this.holding) {
+        if (this.pressT < PRESS_OUT) {
+          // Finger first: the fingertip is about 0.12 m past the palm.
+          const { point, normal } = hand.press;
+          // The hand turned thumb-up, back of the hand to her right, so from her eye the
+          // pointing finger shows its side and pad rather than the back of the hand.
+          const side = new THREE.Vector3(0, 0, 1).cross(normal).normalize();   // her right, facing the surface
+          // The finger comes in from her right, angled across the view, so its length shows.
+          const finger = normal.clone().negate().addScaledVector(side, -0.55).normalize();
+          reach = { palm: point.clone().addScaledVector(finger, -0.12), rot: Anne.surfaceRot(finger, side.multiplyScalar(0.85).add(new THREE.Vector3(0, 0, 0.35))), fast: true };
+        }
+        a.setSubstitute(a.poseIndex('Anne_ButtonFinger'));
+      } else if (hand && hand.mode === 'arm' && ph.handStyle !== 'modern') {
         // Drawn on the physical hand body itself (where it stopped against what it pushes,
         // turned as the physics turned it), else on its target.
         const hb = ph.handBody?.isEnabled() ? ph.handBody : null;
@@ -385,10 +431,11 @@ export class Game {
         }
       } else if (!this.holding && ph?.held) {
         const e = ph.held.entry;
-        reach = a.reachFor(e.inst.name, ph.heldMatrix(new THREE.Matrix4()), e.radius);
+        const m = ph.heldMatrix(new THREE.Matrix4());
+        reach = a.reachFor(e.inst.name, m, e.radius, shoulder, ph.modelBounds?.(e.inst.model).clone().applyMatrix4(m));
         a.setSubstitute(reach.sub);
       }
-      if (!this.holding && !reach?.palm) a.setSubstitute(a.poseIndex('Anne_Natural'));
+      if (!this.holding && !reach?.palm && this.pressT == null) a.setSubstitute(a.poseIndex('Anne_Natural'));
       if (this.holding) a.setSubstitute(this.holding.grip.substitute);
       this.anne.update(dt, player, this.holding, this.recoil, reach);
       this.anne.updateShade(dt, this.collider, this.world, this.scene);
@@ -413,6 +460,7 @@ export class Game {
     // The view drifts back down after a kick; the muzzle flash goes out.
     if (this.kickBack > 0) { const r = Math.min(this.kickBack, dt * 1.2); this.kickBack -= r; player.pitch -= r; }
     if (this.muzzle.sprite.visible && performance.now() > this.muzzle.until) { this.muzzle.sprite.visible = false; this.muzzle.light.intensity = 0; }
+    else if (this.muzzle.sprite.visible) this.placeMuzzle();
 
     this.ui.update({ hp: this.hp, maxHp: this.maxHp, gun: this.gun, hint: this.hint });
   }

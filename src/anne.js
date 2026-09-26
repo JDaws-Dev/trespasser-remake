@@ -201,8 +201,10 @@ export class Anne {
   }
 
   // Where her palm goes on an object she carries (game space): its hand-pickup magnet
-  // if it has one, else on top of it with the fingers pointing away from her.
-  reachFor(name, objMatrix, radius) {
+  // if it has one, else under it, palm up, fingers pointing away from her (`from`, her
+  // shoulder in game space; without it, on top of it), centred under `box` (its
+  // game-space bounds) when given.
+  reachFor(name, objMatrix, radius, from = null, box = null) {
     const pos = new THREE.Vector3(), q = new THREE.Quaternion(), sc = new THREE.Vector3();
     objMatrix.decompose(pos, q, sc);
     const g = this.data.grips[name.replace(/-\d+$/, '')]?.grip;
@@ -211,7 +213,27 @@ export class Anne {
       const m = obj.multiply(mat3ToMatrix4(g.rot, g.pos));
       return { palm: new THREE.Vector3().setFromMatrixPosition(m), rot: m.setPosition(0, 0, 0), sub: g.substitute || this.poseIndex('Anne_Rock') };
     }
-    return { palm: pos.add(new THREE.Vector3(0, 0, Math.min(radius, 0.4) * 0.6)), rot: null, sub: this.poseIndex('Anne_Rock') };
+    const r = Math.min(radius, 0.4) * 0.6;
+    if (!from) return { palm: pos.add(new THREE.Vector3(0, 0, r)), rot: null, sub: this.poseIndex('Anne_Rock') };
+    if (box) {
+      box.getCenter(pos);
+      pos.z = box.min.z + r + 0.02;   // so the palm below lands on its underside
+    }
+    const ahead = pos.clone().sub(from).setZ(0);
+    if (ahead.lengthSq() < 1e-6) ahead.set(0, 1, 0);
+    return { palm: pos.add(new THREE.Vector3(0, 0, -r - 0.02)), rot: Anne.surfaceRot(ahead, new THREE.Vector3(0, 0, -1)),
+             sub: this.poseIndex('Anne_Natural') };
+  }
+
+  // A game-space hand rotation with the back of the hand along `back` and the fingers as
+  // near to `fingers` as they can be (so the palm faces -back: a surface she touches has
+  // back = its outward normal).
+  static surfaceRot(fingers, back) {
+    const z = back.clone().normalize();
+    const y = fingers.clone().addScaledVector(z, -fingers.dot(z));
+    if (y.lengthSq() < 1e-8) y.set(0, 0, 1).addScaledVector(z, -z.z);
+    y.normalize();
+    return new THREE.Matrix4().makeBasis(new THREE.Vector3().crossVectors(y, z), y, z);
   }
 
   setSubstitute(i) {
@@ -244,7 +266,9 @@ export class Anne {
     // lets go or stows what she holds.
     const stowed = !!(reach && reach.stow);
     const up = !stowed && (holding || (reach && reach.palm));
-    this.raise = THREE.MathUtils.clamp((this.raise || 0) + (up ? dt : -dt) * RAISE_RATE, 0, 1);
+    this.raise = THREE.MathUtils.clamp((this.raise || 0) + (up ? dt : -dt) * RAISE_RATE * (reach?.fast || this.fastReturn ? 2.5 : 1), 0, 1);
+    if (reach?.fast) this.fastReturn = true;
+    else if (up || this.raise === 0) this.fastReturn = false;
     const handToGun = new THREE.Matrix4();
     if (holding) {
       // The gun relative to the hand: its grip in the palm.

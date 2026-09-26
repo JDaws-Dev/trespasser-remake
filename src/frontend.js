@@ -9,6 +9,8 @@
 // or Restart) goes straight to the loader; ?menu=1 (Quit → Main Menu) straight to
 // the main screen. The level itself loads behind all of this (main.js); the Game
 // hands its UI over through attach() once it is ready.
+import { KEYMAP } from './controls.js';
+
 const BASE = 'menu/';
 const params = new URLSearchParams(location.search);
 const LEVEL = params.get('level') || 'be';
@@ -50,6 +52,11 @@ const DEFAULTS = { volume: 90, sfx: true, music: true, quality: 4, brightness: 5
 const settings = { ...DEFAULTS };
 try { Object.assign(settings, JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}')); } catch (e) { /* private mode */ }
 const saveSettings = () => { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (e) { /* private mode */ } };
+
+// KeyboardEvent codes as the Controls dialog prints them.
+const KEY_NAMES = { ArrowUp: '↑', ArrowDown: '↓', ArrowLeft: '←', ArrowRight: '→', Mouse0: 'Left mouse', Mouse2: 'Right mouse', Wheel: 'Wheel',
+  ShiftLeft: 'Shift', ShiftRight: 'Shift', AltLeft: 'Alt', AltRight: 'Alt', ControlLeft: 'Ctrl', ControlRight: 'Ctrl', Space: 'Space' };
+const keyNames = (codes = []) => [...new Set(codes.map((c) => KEY_NAMES[c] || c.replace(/^Key|^Digit/, '')))].join(' / ');
 
 // ---------------------------------------------------------------- menu sound
 
@@ -385,6 +392,14 @@ class FrontEnd {
     visualViewport?.addEventListener('resize', () => this.layout());
     addEventListener('keydown', (e) => this.key(e), true);
     this.watchLoading();
+    // A GPU that stalls long enough during the level build (seconds of shader compiles
+    // and terrain baking on a slow device) can lose the WebGL context, which leaves a
+    // black view that only a reload cures. Do that reload for the player, once.
+    document.addEventListener('webglcontextlost', () => {
+      let tried = false;
+      try { tried = sessionStorage.getItem('trespasser.ctxlost') === location.search; sessionStorage.setItem('trespasser.ctxlost', location.search); } catch (e) { /* private mode */ }
+      if (!tried) go(LEVEL, this.mode === 'menu' || this.mode === 'boot' || this.mode === 'video' ? { menu: 1 } : { play: 1 });
+    }, true);
   }
 
   // Stage scale: the 640x480 screen letterboxed into the window. Dialogs follow it
@@ -547,11 +562,16 @@ class FrontEnd {
         this.mode = prev === 'video' ? 'menu' : prev;
         resolve();
       };
-      const onKey = (e) => { if (['Escape', 'Space', 'Enter'].includes(e.code)) { e.preventDefault(); e.stopPropagation(); end(); } };
+      // Skip on input that happened after the video began, judged by the event's own
+      // time: a timer would be late when level building holds up the main thread, and
+      // a key queued behind that work would then slip through unheard.
+      const started = performance.now();
+      const fresh = (e) => e.timeStamp > started + 300;
+      const onKey = (e) => { if (fresh(e) && ['Escape', 'Space', 'Enter'].includes(e.code)) { e.preventDefault(); e.stopPropagation(); end(); } };
       v.addEventListener('ended', end);
       v.addEventListener('error', end);
-      // Ignore the tap that started the video.
-      setTimeout(() => { layer.addEventListener('pointerdown', (e) => { e.preventDefault(); end(); }); addEventListener('keydown', onKey, true); }, 400);
+      layer.addEventListener('pointerdown', (e) => { e.preventDefault(); if (fresh(e)) end(); });
+      addEventListener('keydown', onKey, true);
       window.__feVideo = v;   // for automated tests
       v.play().catch(() => {
         // No user gesture behind this one (autoplay policy): try it silent before giving up.
@@ -718,16 +738,47 @@ class FrontEnd {
     this.push(win, { onEscape: () => win.onButton(ID.CANCEL) });
   }
 
-  // Controls: the original remapping screen, showing the remake's fixed bindings.
+  // Controls: the original remapping screen, filled from the remake's key map
+  // (controls.js KEYMAP) on desktop, or with the touch buttons on a phone. Pointing
+  // at a row (the original's click-to-remap hotspots) shows its keys, the original
+  // key and any note in the line where Invert Mouse was.
   controlsDialog() {
     const win = new Win('controls', { onButton: () => this.pop(win) });
-    const keys = TOUCH
-      ? { 1030: 'Left stick', 1031: 'Stick to edge', 1032: 'Left stick', 1033: 'Left stick', 1034: 'Left stick', 1035: 'JUMP', 1036: '',
-        1043: '', 1037: 'FIRE', 1038: '', 1039: 'Right stick', 1040: 'GRAB', 1041: '', 1042: '', 1044: '', 100: 'More' }
-      : { 1030: 'W', 1031: 'Shift + W', 1032: 'S', 1033: 'A', 1034: 'D', 1035: 'Space', 1036: '',
-        1043: '', 1037: 'Left Mouse', 1038: '', 1039: 'Mouse', 1040: 'E / G', 1041: '', 1042: '', 1044: '', 100: 'More' };
-    for (const [id, s] of Object.entries(keys)) win.text(+id, s);
-    win.disableCheck(102);
+    const texts = [...win.el.querySelectorAll('.fe-text')];
+    const at = (x, y) => texts.find((e) => parseFloat(e.style.left) === x && parseFloat(e.style.top) === y);
+    // Key cell id → action, with the rows' label positions (left column labels at x 10, right at x 248).
+    const rows = [[1030, 'forward', 10, 46], [1031, 'run', 10, 60], [1032, 'back', 10, 74], [1033, 'left', 10, 88], [1034, 'right', 10, 102],
+      [1035, 'jump', 10, 116], [1036, 'crouch', 10, 130], [1044, 'arm', 248, 32], [1043, 'throw', 248, 46], [1037, 'use', 248, 60],
+      [1038, 'wrist', 248, 74], [1039, 'hand', 248, 88], [1040, 'grab', 248, 102], [1041, 'stow', 248, 116], [1042, 'replayVO', 248, 130]];
+    const byAction = Object.fromEntries(KEYMAP.map((k) => [k.action, k]));
+    const touchKeys = { forward: 'Left stick', back: 'Left stick', left: 'Left stick', right: 'Left stick', run: 'Stick to edge', jump: 'JUMP', use: 'FIRE', grab: 'GRAB' };
+    // The Invert Mouse row (nothing to invert in the remake) becomes the info line.
+    win.show(102, false);
+    at(80, 18)?.remove();
+    for (const h of win.el.querySelectorAll('.fe-hot')) if (parseFloat(h.style.top) === 18) h.remove();
+    win.add({ type: 'textbox', visible: 1, id: 900, rect: [8, 5, 312, 31], text: '', size: 9, flags: 0x15 });
+    const idle = TOUCH ? 'Right stick looks around · II pauses'
+      : `Also: ${['turnLeft', 'turnRight', 'reach', 'drop'].map((a) => `${keyNames(byAction[a]?.codes)} ${byAction[a]?.label.toLowerCase()}`).join(' · ')}`;
+    win.text(900, idle);
+    at(248, 144).textContent = '';   // the second line of "Replay voice over"
+    for (const [id, action, lx, ly] of rows) {
+      const k = byAction[action];
+      if (!k) continue;
+      const label = at(lx, ly);
+      if (label) label.textContent = action === 'replayVO' ? 'Replay VO' : k.label.replace(/ \(hold\)$/, '');
+      const keys = TOUCH ? touchKeys[action] || '' : keyNames(k.codes);
+      win.text(id, keys);
+      const cell = win.get(id);
+      const info = TOUCH ? `${k.label}: ${keys || 'not on touch'}`
+        : `${k.label}: ${keys}${k.original ? ` — original: ${k.original}` : ''}${k.note ? `. ${k.note[0].toUpperCase()}${k.note.slice(1)}` : ''}`;
+      const cy = parseFloat(cell.style.top);
+      const hot = [...win.el.querySelectorAll('.fe-hot')].find((h) => Math.abs(parseFloat(h.style.top) - cy) < 2
+        && parseFloat(h.style.left) <= parseFloat(cell.style.left) && parseFloat(h.style.left) + parseFloat(h.style.width) >= parseFloat(cell.style.left) + 10);
+      if (!hot) continue;
+      hot.addEventListener('pointerenter', () => win.text(900, info));
+      hot.addEventListener('pointerdown', () => win.text(900, info));
+      hot.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') win.text(900, idle); });
+    }
     this.push(win, { onEscape: () => this.pop(win) });
   }
 

@@ -43,7 +43,8 @@ export class Audio {
     src.loop = loop;
     src.playbackRate.value = playbackRate;
     const gain = this.ctx.createGain();
-    gain.gain.value = volume * (this.index.samples[name]?.volume || 1);
+    // The pack's per-sample master volume is in dB (0 = as recorded).
+    gain.gain.value = volume * Math.pow(10, (this.index.samples[name]?.volume || 0) / 20);
     src.connect(gain);
     if (pos) {
       const pan = this.ctx.createPanner();
