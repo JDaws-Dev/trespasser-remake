@@ -224,7 +224,11 @@ class Terrain:
                 stack.append((child, -1))
 
     def mesh(self):
-        """(positions, triangles): world-space vertices and index triples."""
+        """(positions, triangles): world-space vertices and index triples.
+
+        Neighbouring leaves can differ in subdivision level, which would leave cracks
+        along shared edges (a T-junction): each leaf's outline therefore includes any
+        vertex that exists at the midpoint of one of its edges, recursively."""
         index, pos, tris = {}, [], []
         def vid(v):
             k = (v.x, v.y)
@@ -232,17 +236,27 @@ class Terrain:
                 index[k] = len(pos)
                 pos.append((v.x * self.sx + self.ox, v.y * self.sy + self.oy, v.get() * self.height))
             return index[k]
+        def edge(a, b, out):
+            # Vertices strictly between a and b that some finer neighbour created.
+            mx, my = (a.x + b.x) // 2, (a.y + b.y) // 2
+            m = self.verts.get((mx, my))
+            if m is None or (mx, my) == (a.x, a.y) or (mx, my) == (b.x, b.y):
+                out.append(b)
+                return
+            edge(a, m, out)
+            edge(m, b, out)
         stack = [self.root]
         while stack:
             n = stack.pop()
             if n.children:
                 stack.extend(n.children)
                 continue
-            v1, v2, v3, v4 = (vid(v) for v in n.verts)
-            # tresgoesde builds in a mirrored (x, height, y) space; in Trespasser's own
-            # Z-up axes the winding is reversed so the normals point up.
-            if n.flip:
-                tris += [(v1, v3, v4), (v1, v2, v3)]
-            else:
-                tris += [(v4, v2, v3), (v4, v1, v2)]
+            order = [n.verts[0], n.verts[1], n.verts[2], n.verts[3]] if n.flip else [n.verts[3], n.verts[0], n.verts[1], n.verts[2]]
+            loop = [order[0]]
+            for i in range(4):
+                edge(order[i], order[(i + 1) % 4], loop)
+            loop.pop()   # back at the start
+            ids = [vid(v) for v in loop]
+            for i in range(1, len(ids) - 1):
+                tris.append((ids[0], ids[i], ids[i + 1]))
         return pos, tris

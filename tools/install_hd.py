@@ -14,10 +14,14 @@ from PIL import Image
 def main():
     level, tid, src = sys.argv[1], sys.argv[2], sys.argv[3]
     tile = '--tile' in sys.argv
+    padded = '--padded' in sys.argv   # made square by hd_prep.py; the original is the top-left
     base = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'public', 'levels', level)
     orig = Image.open(os.path.join(base, 'tex', tid + '.png')).convert('RGBA')
     up = Image.open(src).convert('RGB')
     ow, oh = orig.size
+    if padded:
+        s = max(ow, oh)
+        up = up.crop((0, 0, round(up.width * ow / s), round(up.height * oh / s)))
     # Keep the original's aspect and up to 4x its size, on powers of two.
     scale = min(4, max(1, up.width // ow))
     w, h = ow * scale, oh * scale
