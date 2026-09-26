@@ -28,7 +28,8 @@ export function buildCollider(terrain, info, partGeoms) {
     const p = inst.props || {};
     // Solid scenery only: tangible, not movable, not a terrain decal or water.
     if (p.Tangible !== true || p.Moveable === true) continue;
-    if (inst.cls === 'CTerrainObj' || inst.cls === 'CEntityWater') continue;
+    // Animals move (their props say Movable, not Moveable): never bake one where it was placed.
+    if (inst.cls === 'CTerrainObj' || inst.cls === 'CEntityWater' || inst.cls === 'CAnimal') continue;
     const r = inst.rot, s = inst.scale, t = inst.pos;
     m.set(r[0][0] * s, r[0][1] * s, r[0][2] * s, t[0],
           r[1][0] * s, r[1][1] * s, r[1][2] * s, t[1],
