@@ -43,11 +43,18 @@ function instQuat(inst, out = new THREE.Quaternion()) {
 const rq = (q) => ({ x: q.x, y: q.y, z: q.z, w: q.w });
 
 export async function createPhysics(opts) {
+  const t0 = performance.now();
   await RAPIER.init();
+  const tInit = performance.now() - t0;
   const load = (f) => fetch(`levels/${opts.level}/${f}`).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+  const t1 = performance.now();
   const [extra, colliders, logic] = await Promise.all([load('physics.json'), load('colliders.json'), load('logic.json')]);
-  return new Physics({ ...opts, extra: extra || { boxes: {}, magnets: [] }, colliders: colliders || { solids: [], markers: {} },
+  const tFetch = performance.now() - t1;
+  const p = new Physics({ ...opts, extra: extra || { boxes: {}, magnets: [] }, colliders: colliders || { solids: [], markers: {} },
     logicTargets: logicTargets(logic), logic });
+  await p.build(opts.onProgress);
+  Object.assign(p.timings, { wasmInit: +tInit.toFixed(1), fetch: +tFetch.toFixed(1) });
+  return p;
 }
 
 // Objects the level's triggers act on physically (SET_PHYSICS / MAGNET targets, collision
@@ -87,7 +94,31 @@ export class Physics {
     this.events = new RAPIER.EventQueue(true);
     this.player = null;
     this.bounds = new Map();      // model key -> Box3 (model space)
+    this.args = { info, terrain, partGeoms, refs, extra, colliders, logicTargets };
+  }
+
+  // The build, in slices of about 25 ms that yield to the browser between them (a phone
+  // must never freeze for long), reporting progress (0..1) as it goes.
+  async build(onProgress = null) {
+    const { info, terrain, partGeoms, refs, extra, colliders, logicTargets } = this.args;
+    this.args = null;
+    let sliceAt = performance.now();
+    const total = info.instances.length * 2 + colliders.solids.length + (extra.magnets || []).length + 1;
+    let done = 0;
+    let longest = 0, slices = 0;
+    const slice = async (n = 1, force = false) => {
+      done += n;
+      const ran = performance.now() - sliceAt;
+      if (ran < 25 && !force) return;
+      longest = Math.max(longest, ran); slices++;
+      onProgress?.(Math.min(0.99, done / total));
+      await new Promise((r) => setTimeout(r, 0));
+      sliceAt = performance.now();
+    };
     const t0 = performance.now();
+    this.timings = {};
+    let tm = t0;
+    this.mark = (k) => { const n = performance.now(); this.timings[k] = +(n - tm).toFixed(1); tm = n; };
 
     // --- Static world: terrain and every solid, unmoving object.
     const ground = this.world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
@@ -100,6 +131,7 @@ export class Physics {
     const verts = [];
     let staticBoxes = 0;
     for (const inst of info.instances) {
+      await slice();
       const p = inst.props || {};
       if (p.Tangible !== true || p.Moveable === true) continue;
       if (logicTargets.has(inst.name) && refs[inst.index]) continue;   // a (frozen) body instead
@@ -132,9 +164,11 @@ export class Physics {
       this.world.createCollider(RAPIER.ColliderDesc.trimesh(new Float32Array(verts), idx).setFriction(0.7), ground);
     }
 
+    this.mark('static');
     // --- Invisible solids (never drawn): the F* walls and floors and Baker* blockers
     // that keep Anne out of the sea and up on walkways. Boxes, as the original.
     for (const so of colliders.solids) {
+      await slice();
       if (logicTargets.has(so.name)) {
         // An invisible target (a card reader's box, a keypad): a frozen body, never drawn.
         this.addBody({ name: so.name, pos: so.pos, rot: so.rot, scale: so.scale, props: { Frozen: true, Tangible: true }, index: `solid:${so.name}`,
@@ -155,8 +189,10 @@ export class Physics {
     }
     this.markers = colliders.markers || {};   // named helper placements (TeleportDest*, Emit*...)
 
+    this.mark('invisible');
     // --- Dynamic objects: everything Moveable and Tangible that is drawn.
     for (const inst of info.instances) {
+      await slice();
       const p = inst.props || {};
       const target = logicTargets.has(inst.name) && p.Tangible === true;
       if (!target && (p.Moveable !== true || p.Tangible !== true)) continue;
@@ -166,10 +202,12 @@ export class Physics {
       this.addBody(inst);
     }
 
+    this.mark('dynamic');
     // --- Magnets: hinges and welds between objects, or to the world.
     this.joints = [];
     const byName = new Map(this.entries.map((e) => [e.inst.name, e]));
     for (const mg of extra.magnets || []) {
+      await slice();
       const slave = byName.get(mg.slave);
       if (!slave) continue;
       const master = mg.master ? byName.get(mg.master) : null;
@@ -177,6 +215,8 @@ export class Physics {
       this.addMagnet(mg, slave, master);
     }
 
+    this.mark('magnets');
+    await slice(0, true);
     // Everything starts asleep, where the level put it: it wakes when touched.
     for (const e of this.entries) e.body.sleep();
     // The static world is its own collision group (hinged things can be let off it).
@@ -205,6 +245,7 @@ export class Physics {
       this.unjammed.push(j.slave.inst.name);
     }
 
+    this.mark('firstStep');
     // --- CEntityAttached (the lab vault's lock lights and hand reader): drawn riding on
     // their Target object, wherever its body goes.
     this.attached = [];
@@ -237,13 +278,18 @@ export class Physics {
       return !(this.held && b && b.handle === this.held.entry.body.handle);
     };
 
+    this.mark('player');
     this.buildMs = performance.now() - t0;
+    this.timings.slices = slices + 1;
+    this.timings.longestSliceMs = +Math.max(longest, performance.now() - sliceAt).toFixed(1);
     this.stats = { bodies: this.entries.length, staticBoxes, staticTris: verts.length / 9, joints: this.joints.length };
     this.makeHand();
     this.swing = { stage: 0, t: 0, ax: 0, side: 1 };
     this.frame = 0;
     window.__physics = this;
     this.RayCtor = RAPIER.Ray; this.RAPIER = RAPIER;   // for tests
+    onProgress?.(1);
+    return this;
   }
 
   modelBounds(model) {
