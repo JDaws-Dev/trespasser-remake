@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Install an AI-upscaled texture as the HD version of an original.
 
-    install_hd.py <level> <texture id> <upscaled png> [--tile]
+    install_hd.py <level> <texture id> <upscaled png> [--tile] [--padded]
 
-Verifies the upscale still lines up with the original (UV maps must not move),
-resizes to a power of two, blends the borders for tiling textures, keeps the
-original's alpha (cut-outs), and records it in public/levels/<level>/hd.json.
+Realigns the upscale to the original (the model drifts it by a texel or so),
+verifies it still lines up (UV maps must not move), restores the original's
+broad colour, resizes to a power of two, blends the borders for tiling
+textures, keeps the original's alpha (cut-outs), and records it in
+public/levels/<level>/hd.json.
 """
 import json, os, sys
 import numpy as np
@@ -19,13 +21,33 @@ def main():
     orig = Image.open(os.path.join(base, 'tex', tid + '.png')).convert('RGBA')
     up = Image.open(src).convert('RGB')
     ow, oh = orig.size
-    if padded:
-        s = max(ow, oh)
-        up = up.crop((0, 0, round(up.width * ow / s), round(up.height * oh / s)))
+    s = max(ow, oh) if padded else None
+    cw = round(up.width * ow / s) if padded else up.width
+    ch = round(up.height * oh / s) if padded else up.height
     # Keep the original's aspect and up to 4x its size, on powers of two.
-    scale = min(4, max(1, up.width // ow))
+    scale = min(4, max(1, cw // ow))
     w, h = ow * scale, oh * scale
-    up = up.resize((w, h), Image.LANCZOS)
+
+    # The model often drifts the whole picture by a texel or three; find that
+    # offset (in upscale pixels) and crop the upscale from there instead. The
+    # full image is edge-padded so a crop may start slightly outside it.
+    k = cw / ow   # upscale pixels per original texel
+    pad = int(8 * k)
+    full = Image.fromarray(np.pad(np.asarray(up), ((pad, pad), (pad, pad), (0, 0)), mode='edge'))
+    ref = np.asarray(orig.convert('L').filter(ImageFilter.GaussianBlur(1.5)), float)
+    def crop_at(dx, dy, size, blur=None):
+        im = full.crop((pad + dx, pad + dy, pad + dx + cw, pad + dy + ch)).resize(size, Image.LANCZOS)
+        return im if blur is None else np.asarray(im.convert('L').filter(ImageFilter.GaussianBlur(blur)), float)
+    def score(dx, dy):
+        b = crop_at(dx, dy, (ow, oh), 1.5)
+        return float(np.corrcoef(ref[4:-4, 4:-4].ravel(), b[4:-4, 4:-4].ravel())[0, 1])
+    best = max((score(round(i * k), round(j * k)), round(i * k), round(j * k)) for i in range(-6, 7) for j in range(-6, 7))
+    step = max(1, round(k / 2))
+    _, bx, by = max((score(bx0 + i, by0 + j), bx0 + i, by0 + j)
+                    for bx0, by0 in [best[1:]] for i in range(-step, step + 1) for j in range(-step, step + 1))
+    if bx or by:
+        print(f'{tid}: realigned by {bx / k:+.2f}, {by / k:+.2f} texels')
+    up = crop_at(bx, by, (w, h))
 
     # Alignment check against the original (luminance correlation at 1:1). Both are
     # blurred by one texel first: new sub-texel detail (grass blades, grit) is the
@@ -40,6 +62,13 @@ def main():
         return 1
 
     arr = np.asarray(up, float)
+    # Put back the original's broad colour (anything wider than ~2 texels): the
+    # model tends to drift hue and brightness a little, and the upscale is only
+    # there for the fine detail.
+    blur = ImageFilter.GaussianBlur(2)
+    lo_orig = orig.convert('RGB').filter(blur).resize((w, h), Image.BICUBIC)
+    lo_up = up.resize((ow, oh), Image.LANCZOS).filter(blur).resize((w, h), Image.BICUBIC)
+    arr += np.asarray(lo_orig, float) - np.asarray(lo_up, float)
     if tile:
         # Cross-fade a margin so left/right and top/bottom continue seamlessly.
         m = max(4, w // 32)
