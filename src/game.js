@@ -48,6 +48,19 @@ export class Game {
              : /steg/i.test(inst.name) ? 'Stegosaur' : null,
       }));
 
+    // Animal models are centred on the body: lift each by its model's lowest point so
+    // it stands on its feet, and never frustum-cull them (their instances roam far
+    // from the spawn points the meshes' bounding spheres were computed from).
+    for (const d of this.dinos) {
+      let minZ = 0;
+      for (const { mesh } of this.refs[d.index] || []) {
+        mesh.frustumCulled = false;
+        mesh.geometry.computeBoundingBox();
+        minZ = Math.min(minZ, mesh.geometry.boundingBox.min.z);
+      }
+      d.foot = -minZ * d.scale;
+    }
+
     // Location triggers with sounds: Hammond's narration and Anne's lines play once
     // where the level places them; ambient loops play while Anne is inside their box.
     this.triggers = (info.triggers || []).map((tr) => ({ ...tr, fired: 0, inside: false, source: null }));
@@ -317,7 +330,7 @@ export class Game {
       // Now and then a call, so you hear what is out there.
       d.callT -= dt;
       if (d.callT <= 0 && dist < 250) { d.callT = 12 + Math.random() * 25; this.audio?.vocal(d.vocal, d.raptor ? (d.awake ? 'Snarl' : 'Call') : 'Call', d.pos, 0.8); }
-      d.pos.z = this.groundAt(d.pos.x, d.pos.y);
+      d.pos.z = this.groundAt(d.pos.x, d.pos.y) + d.foot;
       this.setInstanceMatrix(d.index, this.matrixFor(d.inst, d.pos, d.yaw));
       // Gait amount for the walk shader: eases in as the animal moves.
       const moving = d.raptor ? (d.awake && dist > RAPTOR_BITE) : true;
