@@ -394,8 +394,13 @@ def convert(level):
         x0, x1 = min(p[0] for p in pos) - 20, max(p[0] for p in pos) + 20
         y0, y1 = min(p[1] for p in pos) - 20, max(p[1] for p in pos) + 20
         before = len(instances)
+        # Animals are kept: a pen off the map is where triggers teleport them in from
+        # (the summit boss, the beach raptor). They start hidden and asleep (offMap).
+        for i in instances:
+            if i['cls'] == 'CAnimal' and not (x0 <= i['pos'][0] <= x1 and y0 <= i['pos'][1] <= y1):
+                i['offMap'] = True
         instances = [i for i in instances if x0 <= i['pos'][0] <= x1 and y0 <= i['pos'][1] <= y1
-                     or i['cls'] in ('CSky', 'CBackdrop', 'CEntityWater')
+                     or i['cls'] in ('CSky', 'CBackdrop', 'CEntityWater', 'CAnimal')
                      or 'DeltaX' in i['props']]
         print(f'  {before - len(instances)} prototypes off the terrain dropped')
 

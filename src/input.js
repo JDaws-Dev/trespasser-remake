@@ -1,5 +1,7 @@
 // Keyboard + mouse (pointer lock) on desktop; two touch sticks on phones.
+// Bindings come from the one key map in controls.js (the original's defaults).
 import { state } from './ui.js';
+import { has } from './controls.js';
 export class Input {
   constructor(canvas) {
     this.keys = new Set();
@@ -10,8 +12,21 @@ export class Input {
     this.buttons = { fire: false, grab: false, jump: false };
     window.__input = this;   // for automated tests
 
-    addEventListener('keydown', (e) => { if (!this.keys.has(e.code)) this.pressed.add(e.code); this.keys.add(e.code); });
-    addEventListener('mousedown', (e) => { if (document.pointerLockElement === canvas && e.button === 0) this.pressed.add('Fire'); });
+    addEventListener('keydown', (e) => {
+      if (!this.keys.has(e.code)) this.pressed.add(e.code);
+      this.keys.add(e.code);
+      // Space would scroll, Alt would focus the browser's menu bar.
+      if (!state.paused && (e.code === 'Space' || e.code.startsWith('Alt'))) e.preventDefault();
+    });
+    // Mouse buttons are keys too ('Mouse0' left, 'Mouse2' right), while the view is locked.
+    addEventListener('mousedown', (e) => {
+      if (document.pointerLockElement !== canvas) return;
+      const c = 'Mouse' + e.button;
+      if (!this.keys.has(c)) this.pressed.add(c);
+      this.keys.add(c);
+    });
+    addEventListener('mouseup', (e) => this.keys.delete('Mouse' + e.button));
+    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
     addEventListener('keyup', (e) => this.keys.delete(e.code));
     addEventListener('blur', () => this.keys.clear());
     canvas.addEventListener('click', () => { if (!this.touch && !state.paused) { try { canvas.requestPointerLock?.()?.catch?.(() => {}); } catch (e) { /* not allowed here */ } } });
@@ -63,11 +78,20 @@ export class Input {
     el.addEventListener('touchcancel', end);
   }
 
+  // Test hook: hold keys (KeyboardEvent codes, or 'Mouse0' / 'Mouse2') and add a mouse
+  // movement (pixels), as if the player did, through the same poll() as real input.
+  // inject({ keys: ['Mouse0', 'ShiftLeft'], mouse: { x: 40, y: 0 } }); inject({ release: [...] }).
+  inject({ keys = [], release = [], mouse = null } = {}) {
+    for (const c of keys) { if (!this.keys.has(c)) this.pressed.add(c); this.keys.add(c); }
+    for (const c of release) this.keys.delete(c);
+    if (mouse) { this.mouse.x += mouse.x || 0; this.mouse.y += mouse.y || 0; }
+  }
+
   poll(dt) {
     const k = this.keys;
-    let forward = (k.has('KeyW') || k.has('ArrowUp') ? 1 : 0) - (k.has('KeyS') || k.has('ArrowDown') ? 1 : 0);
-    let strafe = (k.has('KeyD') ? 1 : 0) - (k.has('KeyA') ? 1 : 0);
-    let lookX = this.mouse.x * 0.0025 + ((k.has('ArrowRight') ? 1 : 0) - (k.has('ArrowLeft') ? 1 : 0)) * 1.8 * dt;
+    let forward = (has(k, 'forward') ? 1 : 0) - (has(k, 'back') ? 1 : 0);
+    let strafe = (has(k, 'right') ? 1 : 0) - (has(k, 'left') ? 1 : 0);
+    let lookX = this.mouse.x * 0.0025 + ((has(k, 'turnRight') ? 1 : 0) - (has(k, 'turnLeft') ? 1 : 0)) * 1.8 * dt;
     let lookY = this.mouse.y * 0.0025;
     this.mouse.x = this.mouse.y = 0;
 
@@ -78,17 +102,18 @@ export class Input {
     const pressed = this.pressed;
     this.pressed = new Set();
     // Behind the menu or death screen Anne stands still and nothing fires.
-    if (state.paused) return { touch: this.touch, fire: false, pickup: false, drop: false, forward: 0, strafe: 0, look: { x: 0, y: 0 }, run: false, jump: false };
+    if (state.paused) return { touch: this.touch, fire: false, pickup: false, drop: false, hand: false, forward: 0, strafe: 0, look: { x: 0, y: 0 }, run: false, jump: false };
     return {
       touch: this.touch,
-      fire: pressed.has('Fire') || pressed.has('fire') || (k.has('KeyF')) || this.buttons.fire,
-      pickup: pressed.has('KeyE') || pressed.has('grab'),
-      drop: pressed.has('KeyG'),
+      fire: has(pressed, 'use') || has(k, 'use') || pressed.has('fire') || this.buttons.fire,
+      pickup: has(pressed, 'grab') || pressed.has('grab'),
+      drop: has(pressed, 'drop'),
+      hand: has(k, 'hand'),
       forward: Math.max(-1, Math.min(1, forward)),
       strafe: Math.max(-1, Math.min(1, strafe)),
       look: { x: lookX, y: lookY },
-      run: k.has('ShiftLeft') || k.has('ShiftRight') || Math.hypot(L.x, L.y) > 0.95,
-      jump: k.has('Space') || this.buttons.jump,
+      run: has(k, 'run') || Math.hypot(L.x, L.y) > 0.95,
+      jump: has(k, 'jump') || this.buttons.jump,
     };
   }
 }

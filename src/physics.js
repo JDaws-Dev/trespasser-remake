@@ -20,7 +20,10 @@ const DENSITY = 0.1, FRICTION = 5, ELASTICITY = 0.2;
 const HAND_REACH = 0.8, HAND_REACH_MAX = 0.95, HAND_GRAB = 0.2;
 const HAND_PITCH = 75 * Math.PI / 180, HAND_TURN = 35 * Math.PI / 180;
 const HAND_THROW_J = 30, HAND_THROW_V = 10;
-const HAND_MASS = 2, HAND_FORCE = 900;    // N: lifts ~90 kg slowly, knocks light things flying
+const HAND_MASS = 2, HAND_FORCE = 900;
+// Swinging and collision damage (Player.cpp HandleSwing; Animate.cpp fCalculateHitPoints).
+const SWING_MAX_MASS = 5, SWING_MUL = 2.75, SWING_PULL = 35 * Math.PI / 180, SWING_TIME = 0.5;
+const COLLISION_DAMAGE = 0.22;   // hit points per joule of collision energy    // N: lifts ~90 kg slowly, knocks light things flying
 
 const PHONE = matchMedia('(pointer: coarse)').matches || /iPhone|iPad|Android/.test(navigator.userAgent);
 // Bodies farther than this from Anne are put to sleep (and stay asleep until touched).
@@ -171,6 +174,7 @@ export class Physics {
     this.buildMs = performance.now() - t0;
     this.stats = { bodies: this.entries.length, staticBoxes, staticTris: verts.length / 9, joints: this.joints.length };
     this.makeHand();
+    this.swing = { stage: 0, t: 0, ax: 0, side: 1 };
     this.frame = 0;
     window.__physics = this;
     this.RayCtor = RAPIER.Ray; this.RAPIER = RAPIER;   // for tests
@@ -413,7 +417,9 @@ export class Physics {
       const hx = Math.max(0.15, half.x * 0.7), hy = Math.max(0.3, half.y * 0.6), hz = Math.max(0.3, half.z * 0.45);
       this.world.createCollider(RAPIER.ColliderDesc.cuboid(hx, hy, hz).setTranslation(c.x, c.y, c.z + half.z * 0.1)
         .setDensity(300).setFriction(0.8), body);
-      this.dinos.push({ d, body, c, half });
+      const rec = { d, body, c, half };
+      this.dinos.push(rec);
+      (this.dinoByHandle ||= new Map()).set(body.handle, rec);
     }
   }
 
@@ -525,6 +531,7 @@ export class Physics {
     const b = h.entry.body;
     // Within arm's reach of her right shoulder (about 0.85 m), along her view.
     const { dir } = this.eyeRay(player);
+    if (this.swing.stage) dir.applyAxisAngle(_s.set(0, 0, 1), -this.swing.ax);   // swung across her
     const target = this.shoulder(player).addScaledVector(dir, Math.min(0.85, 0.4 + h.entry.radius * 0.6));
     const t = b.translation();
     _v.set(target.x - t.x, target.y - t.y, target.z - t.z);
@@ -645,7 +652,8 @@ export class Physics {
 
   handTarget(player, out) {
     const h = this.hand;
-    const ca = Math.cos(h.ay), bx = Math.sin(h.ax) * ca, by = Math.cos(h.ax) * ca, bz = Math.sin(h.ay);
+    const ax = this.swing.stage && h.holding ? this.swing.ax : h.ax;
+    const ca = Math.cos(h.ay), bx = Math.sin(ax) * ca, by = Math.cos(ax) * ca, bz = Math.sin(h.ay);
     const c = Math.cos(player.yaw), s = Math.sin(player.yaw);
     // Body frame (x right, y ahead) to game space.
     let r = h.reach;
@@ -668,7 +676,7 @@ export class Physics {
     if (!up) {
       h.autoCrouch = false;
       if (h.active) { h.active = false; b.setEnabled(false); }
-      h.mode = 'look';
+      h.mode = h.stowed ? 'stow' : 'look';
       return;
     }
     if (!h.active) this.activateHand(player);
@@ -789,21 +797,32 @@ export class Physics {
     return h.stowed;
   }
 
-  // Fire pressed (left click / FIRE). With the hand up it grabs or lets go; with an
-  // E-carried object it throws; while the gun is stowed it does nothing. True when the
-  // press was used here (the gun does not fire). Acts on the press, not while held.
-  handFire(player) {
-    const pressed = this.fireFrame !== this.frame - 1 && this.fireFrame !== this.frame;
-    this.fireFrame = this.frame;
-    const h = this.hand;
-    if (h.active && h.aiming && !(this.game?.gun && !h.stowed && !h.holding)) {
-      if (pressed && this.handGrab(player) === 'gun') this.game?.tryPickup(player);
-      return true;
-    }
-    if (this.held) return pressed ? this.throw(player) : true;
-    if (h.stowed && this.game?.gun) return true;
-    return false;
+  // Use / fire (held). With no gun in hand and a light object held (5 kg or less),
+  // she swings it: pulled back 35° to one side, then across to the other, hitting 2.75
+  // times as hard on the way across (HandleSwing). While the gun is stowed, nothing.
+  // True when the press was used here.
+  handFire() {
+    if (this.hand.stowed && this.game?.gun) return true;
+    const obj = this.hand.holding || this.held?.entry;
+    if (!obj || this.game?.gun || obj.mass > SWING_MAX_MASS) return false;
+    this.swingUse = this.frame;
+    if (!this.swing.stage) Object.assign(this.swing, { stage: 1, t: 0, ax: SWING_PULL * this.swing.side });
+    return true;
   }
+
+  updateSwing() {
+    const w = this.swing;
+    if (!w.stage) return;
+    if (!(this.hand.holding || this.held?.entry)) { w.stage = 0; return; }
+    w.t += STEP;
+    if (w.t < SWING_TIME) return;
+    const using = this.frame - (this.swingUse || -9) <= 2;
+    if (w.stage === 1) { Object.assign(w, { stage: 2, t: 0, ax: -w.ax }); return; }
+    // A swing done: another the other way while Use is held, else back to rest.
+    if (using) Object.assign(w, { stage: 1, t: 0 });
+    else { w.stage = 0; w.side = -w.side; }
+  }
+
 
   // ---------------------------------------------------------------- guns
   // A gun taken into Anne's hands leaves the simulation...
@@ -900,12 +919,17 @@ export class Physics {
     this.acc = Math.min(this.acc + dt, STEP * MAX_STEPS);
     let steps = 0;
     while (this.acc >= STEP) {
-      for (const e of this.live) { e.prevP.copy(e.curP); e.prevQ.copy(e.curQ); }
+      for (const e of this.live) {
+        e.prevP.copy(e.curP); e.prevQ.copy(e.curQ);
+        const v = e.body.linvel(); (e.vPre ||= new THREE.Vector3()).set(v.x, v.y, v.z);   // for impact energy
+      }
+      this.updateSwing();
       this.updateHeld(player);
       this.updateHand(player);
       this.buoyancy();
       this.world.step(this.events);
       this.impacts();
+      if ((this.stepCount = (this.stepCount || 0) + 1) % 3 === 0) this.scrapes();
       this.acc -= STEP;
       steps++;
       this.world.forEachActiveRigidBody((b) => {
@@ -939,6 +963,57 @@ export class Physics {
     this.steps = steps;
   }
 
+  hitDino(rec, e, impulse) {
+    const now = this.frame;
+    if ((rec.lastHit?.get(e) ?? -99) > now - 20) return;   // one hit per object per third of a second
+    const swung = this.swing.stage === 2 && (this.hand.holding === e || this.held?.entry === e);
+    // The energy it brought in (its speed just before), at most what the knock took out.
+    const v = e.vPre ? e.vPre.lengthSq() : Infinity;
+    const energy = Math.min((impulse * impulse) / (2 * e.mass), 0.5 * e.mass * v);
+    const dmg = COLLISION_DAMAGE * energy * (swung ? SWING_MUL : 1);
+    if (dmg < 1) return;
+    (rec.lastHit ||= new Map()).set(e, now);
+    const ai = this.game?.ai;
+    if (ai?.damage) ai.damage(rec.d, dmg, { from: this.player?.pos });
+    this.onDinoHit?.({ dino: rec.d, entry: e, damage: dmg, swung, point: e.curP.clone() });
+  }
+
+  // Scraping: anything awake sliding along something, about 20 times a second, as
+  // onImpact events with `slide` (J of sliding energy) and a stable pair `id`, so
+  // sfx.js can hold a scrape loop while they keep coming.
+  scrapes() {
+    const cb = this.onImpact;
+    if (!cb) return;
+    let n = 0;
+    for (const e of this.live) {
+      if (n > 12 || !e.body.isEnabled() || e.body.isSleeping() || !e.body.isDynamic()) continue;
+      const v = e.body.linvel();
+      const sp2 = v.x * v.x + v.y * v.y + v.z * v.z;
+      if (sp2 < 0.09) continue;   // under 0.3 m/s
+      for (let i = 0; i < e.body.numColliders(); i++) {
+        const c = e.body.collider(i);
+        this.world.contactPairsWith(c, (o) => {
+          if (o.handle === this.handCol?.handle || o.handle === this.playerCol?.handle) return;
+          this.world.contactPair(c, o, (m, flipped) => {
+            if (m.numContacts() === 0) return;
+            const nrm = m.normal();
+            const vn = v.x * nrm.x + v.y * nrm.y + v.z * nrm.z;
+            const vt2 = Math.max(0, sp2 - vn * vn);
+            if (vt2 < 0.09) return;
+            const ob = o.parent(), oe = ob && this.byHandle.get(ob.handle);
+            n++;
+            cb({
+              bodyA: e.body, bodyB: ob, materialA: this.material.get(c.handle) ?? '',
+              materialB: this.material.get(o.handle) ?? (oe ? '' : 'TERRAIN'),
+              impulse: 0, energy: 0, slide: 0.5 * e.mass * vt2, speed: Math.sqrt(vt2), mass: e.mass,
+              point: e.curP.clone(), id: `${Math.min(c.handle, o.handle)}:${Math.max(c.handle, o.handle)}`,
+            });
+          });
+        });
+      }
+    }
+  }
+
   // Collisions hard enough to hear, handed to onImpact (one per body pair per step).
   impacts() {
     const cb = this.onImpact;
@@ -951,6 +1026,10 @@ export class Physics {
       const other = e === e1 ? e2 : e1;
       const mass = other ? Math.min(e.mass, other.mass) : e.mass;
       const impulse = ev.totalForceMagnitude() * STEP;
+      // An object hitting a living dinosaur hurts it: 0.22 hit points per joule the
+      // object loses (≈ J²/2m), 2.75 times that when swung by Anne.
+      const rec = (b1 && this.dinoByHandle?.get(b1.handle)) || (b2 && this.dinoByHandle?.get(b2.handle));
+      if (rec && !rec.dead && rec.d.alive) this.hitDino(rec, e, impulse);
       // A breakable magnet lets go under a hard enough knock.
       for (const j of this.joints) {
         if (j.joint && j.breakStrength > 0 && (j.slave === e1 || j.slave === e2) && impulse > j.breakStrength) this.removeJoint(j);
@@ -962,7 +1041,7 @@ export class Physics {
         materialA: this.material.get(c1.handle) ?? (e1 ? '' : 'TERRAIN'),
         materialB: this.material.get(c2.handle) ?? (e2 ? '' : 'TERRAIN'),
         impulse, energy: 0.5 * mass * (v.x * v.x + v.y * v.y + v.z * v.z), mass,
-        point: e.curP.clone(), id: `${c1.handle}:${c2.handle}`,
+        point: e.curP.clone(), id: `${Math.min(c1.handle, c2.handle)}:${Math.max(c1.handle, c2.handle)}`,
       });
     });
   }

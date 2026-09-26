@@ -127,27 +127,29 @@ window.__player = player; window.__scene = scene; window.__renderer = renderer; 
 const input = new Input(renderer.domElement);
 const audio = new Audio(`levels/${LEVEL}`);
 const game = new Game({ scene, world, camera, info, refs, collider, groundAt, hud, level: LEVEL, audio });
-game.showHint(input.touch ? 'Left stick walks, right stick looks. GRAB picks up a gun, FIRE shoots.' : 'WASD walk · Shift run · Space jump · E pick up · click to fire · G drop · Esc menu', 7);
+game.showHint(input.touch ? 'Left stick walks, right stick looks. GRAB picks up a gun, FIRE shoots.' : 'WASD walk · Shift run · Q jump · Z crouch · hold left mouse: move hand · right mouse grab · Space fire · F throw · E stow · Esc menu', 7);
 window.__game = game;
 game.physics = physics;
 physics.attachGame(game);
 new Triggers({ game, physics, player, audio, level: LEVEL, groundAt });   // the level's triggers (logic.json): game.logic
-const handControls = new HandControls({ canvas: renderer.domElement, physics, touch: input.touch });
+const handControls = new HandControls({ canvas: renderer.domElement, physics, input, touch: input.touch });
 const sfx = window.__sfx = new (await import('./sfx.js')).Sfx({ audio, game, physics, info, groundAt });   // collisions, footsteps, Anne's voice
 
 const clock = new THREE.Clock();
 const eye = new THREE.Vector3();
 const lookEuler = new THREE.Euler(0, 0, 0, 'ZXY');
 
-renderer.setAnimationLoop(() => {
+const frame = () => {
   const dt = Math.min(clock.getDelta(), 0.05);
   const move = input.poll(dt);
   gaitUniforms.uTime.value = clock.elapsedTime;
+  // The hand key raises Anne's hand before the game reads Grab / Use.
+  const hc = handControls.poll(move);
+  physics.setArm(hc.hand, player);
   game.update(dt, player, move);
 
   // With the hand raised the mouse (or right stick) moves Anne's hand, or with
-  // Shift / Ctrl turns her wrist, instead of turning her head.
-  const hc = handControls.poll();
+  // Shift / Alt turns her wrist, instead of turning her head.
   if (physics.hand.aiming) {
     if (hc.rotate) physics.rotateWrist(move.look.x, move.look.y, hc.roll, hc.reset);
     else physics.moveHand(move.look.x, move.look.y, player);
@@ -159,7 +161,7 @@ renderer.setAnimationLoop(() => {
   player.crouch = THREE.MathUtils.lerp(player.crouch || 0, hc.crouch || physics.hand.autoCrouch ? CROUCH : 0, Math.min(1, dt * 10));
 
   // Walk relative to where Anne faces (yaw 0 looks along +Y).
-  const speed = (move.run ? RUN : WALK) * (hc.crouch ? 0.5 : 1);
+  const speed = (move.run && !hc.rotate ? RUN : WALK) * (hc.crouch ? 0.5 : 1);
   const fx = -Math.sin(player.yaw), fy = Math.cos(player.yaw);
   player.vz -= GRAVITY * dt;
   const delta = new THREE.Vector3(
@@ -189,4 +191,6 @@ renderer.setAnimationLoop(() => {
   audio.updateListener(new THREE.Vector3(player.pos.x, player.pos.y, player.pos.z + EYE_HEIGHT),
     new THREE.Vector3(-Math.sin(player.yaw), Math.cos(player.yaw), 0), new THREE.Vector3(0, 0, 1));
   post.render(dt);
-});
+};
+renderer.setAnimationLoop(frame);
+window.__frame = frame;   // for automated tests: run one whole frame now

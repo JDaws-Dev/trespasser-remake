@@ -212,6 +212,11 @@ def main(level):
         elif isinstance(v, dict): [walk(x) for x in v.values()]
         elif isinstance(v, list): [walk(x) for x in v]
     walk(anne)
+    # Every sample the level's triggers name (tools/export_logic.py), under the exact
+    # spelling they use: pack lookup is case-blind, the index is not.
+    logic = os.path.join(out, 'logic.json')
+    if os.path.exists(logic):
+        walk(json.load(open(logic)).get('samples', []))
 
     # --- Encode whatever is new.
     samples = index['samples']

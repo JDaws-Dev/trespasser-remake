@@ -323,7 +323,7 @@ export class Blood {
     for (let i = 0; i < n; i++) this.drops.geometry.attributes.aFx.setXY(i, 0, 1);
 
     // Mist: a fine red haze that puffs out and thins.
-    const mistMat = fxMaterial(new THREE.MeshBasicMaterial({ map: makeMistTexture(), color: new THREE.Color().setRGB(0.16, 0.006, 0.005),
+    const mistMat = fxMaterial(new THREE.MeshBasicMaterial({ map: makeMistTexture(), color: new THREE.Color().setRGB(0.11, 0.004, 0.003),
       transparent: true, depthWrite: false }), false);
     this.mist = instanced(quad, mistMat, CAP.mist, world, 3);
     this.mist.userData = { pos: new Float32Array(CAP.mist * 3), vel: new Float32Array(CAP.mist * 3), age: new Float32Array(CAP.mist),
@@ -412,9 +412,9 @@ export class Blood {
     const mouth = new THREE.Vector3(d.pos.x + fx * 1.3 * k, d.pos.y + fy * 1.3 * k, d.pos.z + 1.2 * k);
     const toAnne = new THREE.Vector3(player.pos.x - mouth.x, player.pos.y - mouth.y, player.pos.z + 1.1 - mouth.z).normalize();
     const at = mouth.clone().addScaledVector(toAnne, 0.4);
-    this.spray(at, toAnne.clone().negate().setZ(0.6).normalize(), 0.9, rand(2.5, 5), 45, 0.022);
-    this.spray(at, new THREE.Vector3(0, 0, -1), 0.8, rand(1, 2.5), 20, 0.02);
-    this.puff(at, toAnne, 4, 0.35);
+    this.spray(at, toAnne.clone().negate().setZ(0.6).normalize(), 0.9, rand(2.5, 5), 70, 0.009);
+    this.spray(at, new THREE.Vector3(0, 0, -1), 0.8, rand(1, 2.5), 30, 0.008);
+    this.puff(at, toAnne.clone().negate(), 7, 0.45);
     for (let i = 0; i < 2; i++) {
       this.splatAt(new THREE.Vector3(player.pos.x + rand(-0.6, 0.6), player.pos.y + rand(-0.6, 0.6), player.pos.z + 2), rand(0.6, 1.1), i ? 2 : 0, null);
     }
@@ -493,7 +493,7 @@ export class Blood {
       this.dPos[i * 3] = p.x + rand(-0.04, 0.04); this.dPos[i * 3 + 1] = p.y + rand(-0.04, 0.04); this.dPos[i * 3 + 2] = p.z + rand(-0.04, 0.04);
       this.dVel[i * 3] = _v.x * s; this.dVel[i * 3 + 1] = _v.y * s; this.dVel[i * 3 + 2] = _v.z * s + rand(0, 1.2);
       this.dLife[i] = rand(1.2, 2.6);
-      this.dSize[i] = size * rand(0.35, 1.3) * (PHONE ? 1.5 : 1);
+      this.dSize[i] = size * rand(0.3, 1.1) * (PHONE ? 1.5 : 1);
       this.dFloor[i] = floorZ;
       this.dBurst[i] = burst;
     }

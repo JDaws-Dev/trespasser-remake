@@ -262,14 +262,16 @@ export class Anne {
       let rot;
       if (reach.viewRot) {
         rot = new THREE.Matrix4().makeRotationFromQuaternion(reach.viewRot).premultiply(eyeRot);
-        // Holding a gun, the wrist turns from the sighting grip (the gun pointing ahead).
-        if (holding) rot.multiply(mat3ToMatrix4(holding.hold.rot).invert().multiply(mat3ToMatrix4(holding.grip.rot)));
+
       } else if (reach.rot) {
         rot = reach.rot.isQuaternion ? new THREE.Matrix4().makeRotationFromQuaternion(reach.rot) : new THREE.Matrix4().extractRotation(reach.rot);
         rot.premultiply(unYaw);
       } else {
         rot = boneBasis(palm.clone().sub(this.shoulder), new THREE.Vector3(0, 0, 1));
       }
+      // Holding a gun, the wrist turns from the sighting grip (identity: the gun points
+      // ahead), not from her open palm-down hand.
+      if (holding && (reach.viewRot || reach.gunTurn)) rot.multiply(mat3ToMatrix4(holding.hold.rot).invert().multiply(mat3ToMatrix4(holding.grip.rot)));
       this.lastAim = { wrist: palm.sub(this.wristToPalm.clone().applyMatrix4(rot)), rot };
     } else if (holding) {
       const { grip, hold } = holding;

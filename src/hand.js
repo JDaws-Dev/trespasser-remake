@@ -1,40 +1,42 @@
-// Controls for Anne's physical hand (physics.js), after the original's bindings
-// (Lib/Sys/RegInit.cpp: hand, grab, Shift = rotate wrist, Ctrl = rotate arm, throw,
-// stow, crouch), mapped to this remake's scheme:
-//   hold right mouse   raise the hand: the mouse moves it instead of the view
-//   left click         (hand up) grab / let go; a quick flick as you let go throws
+// Controls for Anne's physical hand (physics.js), with the original's default bindings
+// (the key map in controls.js):
+//   hold left mouse    Move Hand: the mouse moves her hand instead of the view
+//   right mouse        Grab / Drop (input.js: `pickup`)
+//   Space              Use / fire (input.js: `fire`)
+//   Shift + mouse      Rotate Wrist (yaw, pitch); Alt + mouse rolls it (Rotate Arm; the
+//                      original's Ctrl); Shift+Alt resets it
+//   F                  Throw          E  Stow / Retrieve          Z  Crouch (held)
 //   wheel              reach in / out
-//   Shift + mouse      turn the wrist; Ctrl + mouse rolls it; Shift+Ctrl resets it
-//   Q                  throw what she holds
-//   R                  stow / retrieve the gun
-//   C (or Z)           crouch while held
 // On touch, buttons made here: HAND (toggle: the right stick moves the hand), ROTATE
 // (hold: the right stick turns the wrist), THROW, STOW, CROUCH (toggle). GRAB and FIRE
 // grab / let go while the hand is up.
+import { has, codesFor } from './controls.js';
+
 export class HandControls {
-  constructor({ canvas, physics, touch }) {
-    Object.assign(this, { canvas, physics, touch });
-    this.keys = new Set();
+  constructor({ canvas, physics, input, touch }) {
+    Object.assign(this, { canvas, physics, input, touch });
+    this.keys = input.keys;   // the same held keys Input reads (and its test hook injects)
+    this.touchHand = false;
     this.touchRotate = false;
     this.touchCrouch = false;
     const locked = () => document.pointerLockElement === canvas;
     const playing = () => document.body.classList.contains('playing');
 
-    addEventListener('mousedown', (e) => { if (e.button === 2 && locked()) physics.setArm(true); });
-    addEventListener('mouseup', (e) => { if (e.button === 2) physics.setArm(false); });
-    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
     addEventListener('wheel', (e) => { if (locked() && physics.hand.aiming) physics.handReach(-Math.sign(e.deltaY) * 0.05); }, { passive: true });
+    // Throw and Stow act on the press.
     addEventListener('keydown', (e) => {
-      if (!playing()) return;
-      if (!this.keys.has(e.code)) {
-        if (e.code === 'KeyQ') physics.handThrow(physics.player);
-        if (e.code === 'KeyR') physics.stow();
-      }
-      this.keys.add(e.code);
+      if (!playing() || e.repeat) return;
+      if (codesFor('throw').includes(e.code)) physics.handThrow(physics.player);
+      if (codesFor('stow').includes(e.code)) physics.stow();
     });
-    addEventListener('keyup', (e) => this.keys.delete(e.code));
-    addEventListener('blur', () => { this.keys.clear(); physics.setArm(false); });
-    document.addEventListener('pointerlockchange', () => { if (!locked()) physics.setArm(false); });
+
+    // While the mouse turns the wrist or the arm, say so.
+    const tag = document.createElement('div');
+    tag.id = 'handmode';
+    tag.style.cssText = 'position:fixed;left:50%;top:58%;transform:translateX(-50%);padding:3px 10px;border-radius:10px;' +
+      'background:rgba(0,0,0,.45);color:#ffd88a;font:600 12px/1.4 system-ui,sans-serif;letter-spacing:.12em;pointer-events:none;display:none;z-index:20';
+    document.body.append(tag);
+    this.tag = tag;
 
     if (touch) this.buttons();
   }
@@ -63,7 +65,7 @@ export class HandControls {
       return b;
     };
     const ph = this.physics;
-    make('HAND', (b) => { ph.setArm(!ph.hand.aiming); b.classList.toggle('on', ph.hand.aiming); });
+    make('HAND', (b) => { this.touchHand = !this.touchHand; b.classList.toggle('on', this.touchHand); });
     make('ROTATE', (b) => { this.touchRotate = true; b.classList.add('on'); }, (b) => { this.touchRotate = false; b.classList.remove('on'); });
     make('THROW', () => ph.handThrow(ph.player));
     make('STOW', (b) => { b.classList.toggle('on', ph.stow()); });
@@ -71,11 +73,15 @@ export class HandControls {
     document.body.append(pad);
   }
 
-  // Modifiers for this frame.
-  poll() {
+  // This frame's hand state: whether the hand is raised (the hand key, or HAND on
+  // touch), and the wrist / arm / crouch modifiers (keys held in Input).
+  poll(move) {
     const k = this.keys;
-    const shift = k.has('ShiftLeft') || k.has('ShiftRight') || this.touchRotate;
-    const ctrl = k.has('ControlLeft') || k.has('ControlRight');
-    return { rotate: shift || ctrl, roll: ctrl && !shift, reset: shift && ctrl, crouch: k.has('KeyC') || k.has('KeyZ') || this.touchCrouch };
+    const wrist = has(k, 'wrist') || this.touchRotate, arm = has(k, 'arm');
+    const hand = !!move.hand || this.touchHand;
+    const r = { hand, rotate: wrist || arm, roll: arm && !wrist, reset: wrist && arm, crouch: has(k, 'crouch') || this.touchCrouch };
+    const label = hand && r.rotate ? (r.reset ? 'RESET WRIST' : r.roll ? 'ARM' : 'WRIST') : '';
+    if (label !== this.label) { this.label = label; this.tag.textContent = label; this.tag.style.display = label ? 'block' : 'none'; }
+    return r;
   }
 }

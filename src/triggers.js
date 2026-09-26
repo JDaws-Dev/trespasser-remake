@@ -208,13 +208,16 @@ export class Triggers {
       r[2][0], r[2][1], r[2][2], o.pos[2], 0, 0, 0, 1);
   }
 
-  inside(t, p) {
-    _v.copy(p).sub(t.origin).applyMatrix4(t.inv).divideScalar(t.scale || 1);
+  // Is a point in the trigger's volume? Non-point triggers test the object's bounds
+  // (bIntersects): approximated by a sphere of radius `r` about the point.
+  inside(t, p, r = 0) {
+    const s = t.scale || 1, m = t.point ? 0 : r / s;
+    _v.copy(p).sub(t.origin).applyMatrix4(t.inv).divideScalar(s);
     if (t.shape?.type === 'box') {
       const [lo, hi] = t.shape.box;
-      return _v.x >= lo[0] && _v.x <= hi[0] && _v.y >= lo[1] && _v.y <= hi[1] && _v.z >= lo[2] && _v.z <= hi[2];
+      return _v.x >= lo[0] - m && _v.x <= hi[0] + m && _v.y >= lo[1] - m && _v.y <= hi[1] + m && _v.z >= lo[2] - m && _v.z <= hi[2] + m;
     }
-    return _v.lengthSq() <= 1;
+    return _v.length() <= 1 + m;
   }
 
   // ---------------------------------------------------------------- the step
@@ -229,13 +232,12 @@ export class Triggers {
     this.acc = Math.min(this.acc + dt, 0.25);
     while (this.acc >= TICK) {
       this.acc -= TICK;
-      this.t += TICK;
       this.step();
     }
   }
 
   step() {
-    const now = this.t;
+    const now = this.t += TICK;
     this.pollObjects();
     this.pollCreatures();
     for (const t of this.list) {
@@ -255,14 +257,16 @@ export class Triggers {
 
   stepLocation(t) {
     const act = t.c.TriggerActivate;
-    const check = (id, p, type) => {
+    const check = (id, p, type, r = 0.3) => {
       if (!p) { if (t.contained.has(id)) this.moved(t, id, type, false); return; }
-      const inn = this.inside(t, p);
+      const inn = this.inside(t, p, r);
       if (inn !== t.contained.has(id)) this.moved(t, id, type, inn);
     };
     if (act) {
-      const type = /\+Anne$|^Anne$|^Player$/.test(act) ? 'player' : this.dinoByName.has(act) ? 'creature' : 'object';
-      check(act, this.locate(act, _v2), type);
+      // Anne's hand, foot and body boxes are objects to a trigger; only Anne is the player.
+      const type = /^Anne$|^Player$/.test(act) ? 'player' : this.dinoByName.has(act) ? 'creature' : 'object';
+      const r = act === '$AnneHand+Anne' ? 0.06 : this.bodyByName.get(act)?.radius ?? 0.3;
+      check(act, this.locate(act, _v2), type, r);
       if ((t.always.player || t.always.object || t.always.creature) && t.contained.has(act)) this.attempt(t);
       return;
     }
@@ -270,8 +274,8 @@ export class Triggers {
     if (t.want.creature) for (const d of this.game.dinos) check(d, d.pos, 'creature');
     if (t.want.object && this.physics) {
       // Tangible moveable objects: those moving now, and those already inside.
-      for (const e of this.physics.live) check(e, e.curP, 'object');
-      for (const e of t.contained) if (e.curP && !this.physics.live.has(e)) check(e, e.curP, 'object');
+      for (const e of this.physics.live) check(e, e.curP, 'object', e.radius);
+      for (const e of t.contained) if (e.curP && !this.physics.live.has(e)) check(e, e.curP, 'object', e.radius);
     }
     if (t.always.player || t.always.object || t.always.creature) {
       for (const id of t.contained) {
@@ -724,6 +728,13 @@ export class Triggers {
       if (setPos) { d.pos.set(pos.x, pos.y, this.groundAt(pos.x, pos.y) + (d.foot || 0)); }
       if (setRot) d.yaw = new THREE.Euler().setFromQuaternion(quat, 'ZXY').z;
       d.teleported = true;
+      return 0;
+    }
+    const tt = this.byName.get(name);
+    if (tt) {
+      // A trigger moved (CMessageMoveTriggerTo): its volume goes with it.
+      if (setPos) tt.origin.copy(pos);
+      if (setRot) tt.inv.makeRotationFromQuaternion(quat).transpose();
       return 0;
     }
     const e = this.bodyByName.get(name);

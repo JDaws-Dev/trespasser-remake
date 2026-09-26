@@ -189,15 +189,23 @@ export class Sfx {
     return played;
   }
 
-  // physics.onImpact: { materialA, materialB, impulse, point, energy?, slide?, id?, mass? }.
+  // physics.onImpact: { materialA, materialB, impulse, point, energy, mass, id, slide? }.
   impact(ev) {
     if (!this.data || !ev) return;
     const p = ev.point instanceof THREE.Vector3 ? ev.point : _v.set(ev.point.x, ev.point.y, ev.point.z).clone();
-    const res = (m) => (!m || /^terrain$/i.test(m) ? this.groundMaterial(p.x, p.y, p.z) : m);
+    // '' is Anne's hand; 'TERRAIN' the ground or static scenery with no material of its
+    // own: the terrain region there, or the nearest scenery that names one.
+    let ground = null;
+    const res = (m) => {
+      if (m === '' || m == null) return 'ANNE-HAND';
+      if (!/^terrain$/i.test(m)) return m;
+      ground ??= this.groundAt(p.x, p.y);
+      return p.z - ground > 0.4 ? this.sceneryMaterial(p) || 'terrain - wood' : this.groundMaterial(p.x, p.y, p.z);
+    };
     const a = res(ev.materialA), b = res(ev.materialB);
-    // Anne's own body makes no collision sounds (the engine's "brutal evil hack"); her
-    // feet are handled by the walk cycle.
-    if (/^anne/i.test(a) || /^anne/i.test(b)) return;
+    // Anne's body and feet make no collision sounds here (the engine's "brutal evil
+    // hack"); her feet are handled by the walk cycle.
+    if (/^anne-(body|foot)/i.test(a) || /^anne-(body|foot)/i.test(b)) return;
     const energy = ev.energy ?? (ev.impulse ? (ev.impulse * ev.impulse) / (2 * (ev.mass || 10)) : 0);
     this.collide(a, b, normHit(energy), p);
     if (ev.slide > 0) this.slide(a, b, normSlide(ev.slide), p, ev.id ?? this.key(a, b));
