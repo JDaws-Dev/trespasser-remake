@@ -55,6 +55,17 @@ const push = new THREE.Vector3();
 
 // Move the capsule standing at `feet` by `delta`; returns whether it rests on ground.
 export function moveCapsule(collider, feet, delta, radius = 0.3, height = 1.7) {
+  // A move longer than the capsule is thin would pass through walls and floors:
+  // take it in pieces.
+  const len = delta.length();
+  if (len > radius * 0.8) {
+    const steps = Math.min(64, Math.ceil(len / (radius * 0.8)));
+    const piece = delta.clone().divideScalar(steps);
+    const start = feet.clone();
+    let onGround = false;
+    for (let i = 0; i < steps; i++) onGround = moveCapsule(collider, feet, piece, radius, height).onGround || onGround;
+    return { onGround, moved: feet.clone().sub(start) };
+  }
   const bvh = collider.boundsTree;
   const start = feet.clone();
   feet.add(delta);

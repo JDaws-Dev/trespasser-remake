@@ -75,6 +75,7 @@ export async function loadLevel(base, onProgress = () => {}) {
   const q = new URLSearchParams(location.search);
   const only = q.get('only')?.split(','), hide = q.get('hide')?.split(',');
   const byModel = new Map();
+  info.instances.forEach((inst, idx) => (inst.index = idx));
   for (const inst of info.instances) {
     if (only && !only.includes(inst.cls)) continue;
     if (hide && hide.includes(inst.cls)) continue;
@@ -84,6 +85,7 @@ export async function loadLevel(base, onProgress = () => {}) {
     byModel.get(inst.model).push(inst);
   }
 
+  const refs = {};   // instance index -> [{ mesh, i }]
   const m4 = new THREE.Matrix4();
   const matrixOf = (inst) => {
     const r = inst.rot, s = inst.scale, p = inst.pos;
@@ -116,6 +118,7 @@ export async function loadLevel(base, onProgress = () => {}) {
       const mesh = new THREE.InstancedMesh(geo, isWater ? waterMat : mat, list.length);
       if (isWater) mesh.renderOrder = 10;
       list.forEach((inst, i) => {
+        (refs[inst.index] ||= []).push({ mesh, i });
         const r = inst.rot, s = inst.scale, p = inst.pos;
         m4.set(r[0][0] * s, r[0][1] * s, r[0][2] * s, p[0],
                r[1][0] * s, r[1][1] * s, r[1][2] * s, p[1],
@@ -157,5 +160,5 @@ export async function loadLevel(base, onProgress = () => {}) {
   }
 
   await Promise.all(pending);
-  return { group, info, terrain, decals, seaLevel, partGeoms };
+  return { group, info, terrain, decals, seaLevel, partGeoms, refs };
 }

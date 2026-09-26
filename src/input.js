@@ -5,8 +5,11 @@ export class Input {
     this.mouse = { x: 0, y: 0 };
     this.touch = matchMedia('(pointer: coarse)').matches;
     this.sticks = { L: { x: 0, y: 0, id: null }, R: { x: 0, y: 0, id: null } };
+    this.pressed = new Set();   // one-shot keys, cleared each poll
+    this.buttons = { fire: false, grab: false };
 
-    addEventListener('keydown', (e) => this.keys.add(e.code));
+    addEventListener('keydown', (e) => { if (!this.keys.has(e.code)) this.pressed.add(e.code); this.keys.add(e.code); });
+    addEventListener('mousedown', (e) => { if (document.pointerLockElement === canvas && e.button === 0) this.pressed.add('Fire'); });
     addEventListener('keyup', (e) => this.keys.delete(e.code));
     addEventListener('blur', () => this.keys.clear());
     canvas.addEventListener('click', () => { if (!this.touch) canvas.requestPointerLock?.(); });
@@ -17,6 +20,12 @@ export class Input {
     if (this.touch) {
       document.body.classList.add('touch');
       for (const side of ['L', 'R']) this.bindStick(side);
+      for (const id of ['fire', 'grab']) {
+        const el = document.getElementById('btn-' + id);
+        el.addEventListener('touchstart', (e) => { this.buttons[id] = true; this.pressed.add(id); e.preventDefault(); }, { passive: false });
+        const off = () => (this.buttons[id] = false);
+        el.addEventListener('touchend', off); el.addEventListener('touchcancel', off);
+      }
     }
   }
 
@@ -57,7 +66,13 @@ export class Input {
     if (L.id !== null) { forward -= L.y; strafe += L.x; }
     if (R.id !== null) { lookX += R.x * 2.4 * dt; lookY += R.y * 1.8 * dt; }
 
+    const pressed = this.pressed;
+    this.pressed = new Set();
     return {
+      touch: this.touch,
+      fire: pressed.has('Fire') || pressed.has('fire') || (k.has('KeyF')) || this.buttons.fire,
+      pickup: pressed.has('KeyE') || pressed.has('grab'),
+      drop: pressed.has('KeyG'),
       forward: Math.max(-1, Math.min(1, forward)),
       strafe: Math.max(-1, Math.min(1, strafe)),
       look: { x: lookX, y: lookY },

@@ -18,6 +18,11 @@
   #stickL { left: max(24px, env(safe-area-inset-left)); }
   #stickR { right: max(24px, env(safe-area-inset-right)); }
   body.touch .stick { display: block; }
+  .btn { position: fixed; width: 68px; height: 68px; border-radius: 50%; border: 2px solid rgba(255,255,255,.3); background: rgba(0,0,0,.25);
+         color: #f2eee0; font: 700 13px -apple-system, sans-serif; display: none; place-items: center; letter-spacing: .04em; }
+  body.touch .btn { display: grid; }
+  #btn-fire { right: max(24px, env(safe-area-inset-right)); bottom: calc(max(24px, env(safe-area-inset-bottom)) + 150px); width: 84px; height: 84px; }
+  #btn-grab { right: calc(max(24px, env(safe-area-inset-right)) + 100px); bottom: calc(max(24px, env(safe-area-inset-bottom)) + 160px); }
 </style>
 </head>
 <body>
@@ -25,6 +30,8 @@
 <div id="hud"></div>
 <div class="stick" id="stickL"><i></i></div>
 <div class="stick" id="stickR"><i></i></div>
+<div class="btn" id="btn-fire">FIRE</div>
+<div class="btn" id="btn-grab">GRAB</div>
 <script type="module" src="/src/main.js"></script>
 </body>
 </html>

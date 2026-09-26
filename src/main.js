@@ -6,6 +6,7 @@ import { loadLevel, textureUrl } from './level.js';
 import { Input } from './input.js';
 import { paintTerrain } from './terrainPaint.js';
 import { buildCollider, moveCapsule } from './collision.js';
+import { Game } from './game.js';
 
 const LEVEL = new URLSearchParams(location.search).get('level') || 'be';
 const EYE_HEIGHT = 1.6;       // metres
@@ -53,7 +54,7 @@ addEventListener('resize', () => {
 const loading = document.getElementById('loading');
 const hud = document.getElementById('hud');
 
-const { group, info, terrain, decals, seaLevel, partGeoms } = await loadLevel(`levels/${LEVEL}`, (s) => (loading.textContent = s));
+const { group, info, terrain, decals, seaLevel, partGeoms, refs } = await loadLevel(`levels/${LEVEL}`, (s) => (loading.textContent = s));
 world.add(group);
 
 // The sky, as Trespasser draws it: a cloud texture tiled across a high flat plane
@@ -116,8 +117,9 @@ if (at) {
 }
 window.__player = player; window.__scene = scene;   // for automated tests
 const input = new Input(renderer.domElement);
-hud.textContent = input.touch ? 'Left stick to walk · right stick to look' : 'Click to look around · WASD to walk · Shift to run · Space to jump';
-setTimeout(() => (hud.textContent = ''), 6000);
+const game = new Game({ scene, world, camera, info, refs, collider, groundAt, hud, level: LEVEL });
+game.showHint(input.touch ? 'Left stick walks, right stick looks. GRAB picks up a gun, FIRE shoots.' : 'Click to look · WASD walk · Shift run · E pick up · click to fire · G drop', 7);
+window.__game = game;
 
 const clock = new THREE.Clock();
 const eye = new THREE.Vector3();
@@ -126,6 +128,7 @@ const lookEuler = new THREE.Euler(0, 0, 0, 'ZXY');
 renderer.setAnimationLoop(() => {
   const dt = Math.min(clock.getDelta(), 0.05);
   const move = input.poll(dt);
+  game.update(dt, player, move);
 
   player.yaw -= move.look.x;
   player.pitch = THREE.MathUtils.clamp(player.pitch - move.look.y, -1.45, 1.45);
