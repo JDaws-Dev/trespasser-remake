@@ -44,6 +44,11 @@ function terrainMaterial(renderer, map) {
   return mat;
 }
 
+// The base bake is 2 px/m, coarser than the decal textures themselves (and far
+// coarser than their AI upscales). The tiles around the player are re-baked at
+// full detail into a small pool of targets that follows her.
+const NEAR_PIXELS = matchMedia('(pointer: coarse)').matches ? 1024 : 2048;
+
 export function paintTerrain(renderer, terrainMesh, decals) {
   const geo = terrainMesh.geometry;
   geo.computeBoundingBox();
@@ -87,22 +92,26 @@ export function paintTerrain(renderer, terrainMesh, decals) {
   }
 
   const group = new THREE.Group();
+  const tiles = new Map();   // "tx,ty" -> { mesh, base }
+  const targetOptions = { generateMipmaps: true, minFilter: THREE.LinearMipmapLinearFilter, colorSpace: THREE.SRGBColorSpace };
+  const aniso = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+  const bake = (target, left, bottom) => {
+    cam.left = left; cam.right = left + TILE_METRES; cam.bottom = bottom; cam.top = bottom + TILE_METRES;
+    cam.position.set(0, 0, 500);
+    cam.updateProjectionMatrix();
+    renderer.setRenderTarget(target);
+    renderer.render(scene, cam);
+    target.texture.wrapS = target.texture.wrapT = THREE.ClampToEdgeWrapping;
+    target.texture.anisotropy = aniso;
+  };
   const prevTarget = renderer.getRenderTarget();
   for (let ty = 0; ty < ny; ty++) {
     for (let tx = 0; tx < nx; tx++) {
       const tris = buckets[ty * nx + tx];
       if (!tris.length) continue;
       const left = x0 + tx * TILE_METRES, bottom = y0 + ty * TILE_METRES;
-      const target = new THREE.WebGLRenderTarget(TILE_PIXELS, TILE_PIXELS, {
-        generateMipmaps: true, minFilter: THREE.LinearMipmapLinearFilter, colorSpace: THREE.SRGBColorSpace,
-      });
-      cam.left = left; cam.right = left + TILE_METRES; cam.bottom = bottom; cam.top = bottom + TILE_METRES;
-      cam.position.set(0, 0, 500);
-      cam.updateProjectionMatrix();
-      renderer.setRenderTarget(target);
-      renderer.render(scene, cam);
-      target.texture.wrapS = target.texture.wrapT = THREE.ClampToEdgeWrapping;
-      target.texture.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+      const target = new THREE.WebGLRenderTarget(TILE_PIXELS, TILE_PIXELS, targetOptions);
+      bake(target, left, bottom);
 
       // This tile's piece of terrain, with UVs from world position.
       const piece = new THREE.BufferGeometry();
@@ -118,8 +127,40 @@ export function paintTerrain(renderer, terrainMesh, decals) {
       const mesh = new THREE.Mesh(piece, terrainMaterial(renderer, target.texture));
       mesh.receiveShadow = true;
       group.add(mesh);
+      tiles.set(`${tx},${ty}`, { mesh, base: target.texture });
     }
   }
   renderer.setRenderTarget(prevTarget);
+
+  // Nine full-detail targets, handed to whichever tiles surround the player.
+  const pool = Array.from({ length: 9 }, () => new THREE.WebGLRenderTarget(NEAR_PIXELS, NEAR_PIXELS, targetOptions));
+  let focused = null;
+  const near = new Map();   // tile key -> pool target currently holding it
+  group.focus = (x, y) => {
+    const tx = Math.floor((x - x0) / TILE_METRES), ty = Math.floor((y - y0) / TILE_METRES);
+    const key = `${tx},${ty}`;
+    if (key === focused) return;
+    focused = key;
+    const wanted = [];
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      const k = `${tx + dx},${ty + dy}`;
+      if (tiles.has(k)) wanted.push(k);
+    }
+    // Tiles leaving the ring go back to their base bake and free their target.
+    const free = [];
+    for (const [k, target] of near) if (!wanted.includes(k)) { tiles.get(k).mesh.material.map = tiles.get(k).base; near.delete(k); free.push(target); }
+    for (const t of pool) if (![...near.values()].includes(t) && !free.includes(t)) free.push(t);
+    const prev = renderer.getRenderTarget();
+    for (const k of wanted) {
+      if (near.has(k)) continue;
+      const target = free.pop();
+      if (!target) break;
+      const [kx, ky] = k.split(',').map(Number);
+      bake(target, x0 + kx * TILE_METRES, y0 + ky * TILE_METRES);
+      tiles.get(k).mesh.material.map = target.texture;
+      near.set(k, target);
+    }
+    renderer.setRenderTarget(prev);
+  };
   return group;
 }

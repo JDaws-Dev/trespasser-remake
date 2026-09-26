@@ -9,7 +9,7 @@ original's alpha (cut-outs), and records it in public/levels/<level>/hd.json.
 """
 import json, os, sys
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageFilter
 
 def main():
     level, tid, src = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -27,9 +27,12 @@ def main():
     w, h = ow * scale, oh * scale
     up = up.resize((w, h), Image.LANCZOS)
 
-    # Alignment check against the original (luminance correlation at 1:1).
-    a = np.asarray(orig.convert('L').resize((ow, oh)), float)
-    b = np.asarray(up.convert('L').resize((ow, oh), Image.LANCZOS), float)
+    # Alignment check against the original (luminance correlation at 1:1). Both are
+    # blurred by one texel first: new sub-texel detail (grass blades, grit) is the
+    # point of the upscale, and only a shifted or redrawn layout should fail.
+    soft = ImageFilter.GaussianBlur(1)
+    a = np.asarray(orig.convert('L').resize((ow, oh)).filter(soft), float)
+    b = np.asarray(up.convert('L').resize((ow, oh), Image.LANCZOS).filter(soft), float)
     a -= a.mean(); b -= b.mean()
     corr = float((a * b).sum() / np.sqrt((a * a).sum() * (b * b).sum() + 1e-9))
     if corr < 0.85:

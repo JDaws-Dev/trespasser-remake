@@ -72,9 +72,10 @@ if (info.sea != null) atmosphere.makeSea(world, info.sea, '.');
 // Every lit material takes the sun's cascaded shadows.
 const lit = new Set();
 group.traverse((o) => { if (o.material && o.material.isMeshStandardMaterial) lit.add(o.material); });
+let painted = null;
 if (terrain) {
   loading.textContent = 'Painting the terrain…';
-  const painted = paintTerrain(renderer, terrain, decals);
+  painted = paintTerrain(renderer, terrain, decals);
   painted.traverse((o) => { if (o.material) lit.add(o.material); });
   world.add(painted);
   terrain.visible = false;   // still used for ground height
@@ -158,6 +159,7 @@ renderer.setAnimationLoop(() => {
   camera.quaternion.premultiply(world.quaternion);
 
   if (skyPlane) skyPlane.position.set(player.pos.x, player.pos.y, player.pos.z + 350);
+  painted?.focus(player.pos.x, player.pos.y);
   atmosphere.update(dt);
   audio.updateListener(new THREE.Vector3(player.pos.x, player.pos.y, player.pos.z + EYE_HEIGHT),
     new THREE.Vector3(-Math.sin(player.yaw), Math.cos(player.yaw), 0), new THREE.Vector3(0, 0, 1));
