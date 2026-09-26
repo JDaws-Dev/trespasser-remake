@@ -211,11 +211,34 @@ def convert(level):
     # Objects that exist for game logic only are never drawn.
     LOGIC = {'AI Command', 'CLocationTrigger', 'CMagnet', 'CStartTrigger', 'Player Settings', 'CObjectTrigger',
              'Teleport', 'CTimerTrigger', 'CCollisionTrigger', 'TerrainPlacement', 'CMuzzleFlash', 'CParticles'}
+    # Posed copies (Jungle Road's RaptorA103-00...) have their own geometry, so no hash
+    # matches; they have the prototype's UV layout and face materials, only the material
+    # names are empty. They borrow the material of the textured animal whose name
+    # prefixes theirs (RaptorA), or failing that one with the same face count.
+    protos = []
+    for i in range(count):
+        seh_obj, name_h = struct.unpack_from('<2I', reg, 4 + 44 * i)
+        attr = struct.unpack_from('<I', reg, 4 + 44 * i + 36)[0]
+        pr = properties(values, attr)
+        if not isinstance(pr, dict) or pr.get('Class') != 'CAnimal' or seh_obj not in g.by_handle:
+            continue
+        _o, pg, pm = struct.unpack_from('<3I', g.by_handle[seh_obj][2], 0)
+        if pg in g.by_handle and pm in g.by_handle:
+            ph = struct.unpack_from('<I', g.by_handle[pm][2], 0)[0]
+            if any(n for n, _b, _c in read_material(g, ph)):
+                protos.append((g.symbols.get(name_h, ''), struct.unpack_from('<I', g.by_handle[pg][2], 16)[0],
+                               ph, pr.get('Diffuse', 1.0)))
+    def animal_proto(name, faces):
+        by_name = [p for p in protos if name.lower().startswith(p[0].lower()) and p[1] == faces]
+        by_faces = [p for p in protos if p[1] == faces]
+        best = max(by_name, key=lambda p: len(p[0])) if by_name else by_faces[0] if by_faces else None
+        return best
     blob = bytearray()
     missing = 0
     for i in range(count):
         seh_obj, name_h, px, py, pz, rx, ry, rz, scale, attr, _one = struct.unpack_from('<2I7f2I', reg, 4 + 44 * i)
         name = g.symbols.get(name_h, '')
+        material_override = None
         props = properties(values, attr)
         props = props if isinstance(props, dict) else {}
         klass = props.get('Class')
@@ -251,11 +274,18 @@ def convert(level):
                 model_key = textured_by_geo[geo_hash]
             elif any(n for n, _b, _c in mat_names):
                 textured_by_geo.setdefault(geo_hash, model_key)
+            elif len(g.by_handle[seh_geo][2]) >= 20:
+                proto = animal_proto(name, struct.unpack_from('<I', g.by_handle[seh_geo][2], 16)[0])
+                if proto:
+                    material_override, diffuse = proto[2], proto[3]
+                    model_key = (seh_geo, diffuse)
         if model_key not in models:
             mesh = read_mesh(g, seh_geo)
             # Raw meshes are the jointed ones: only animals are drawn from those.
             if mesh is None and klass == 'CAnimal':
                 mesh = read_raw_mesh(g, seh_geo, seh_map)
+                if mesh and material_override is not None:
+                    mesh['material'] = material_override
             if mesh is None:
                 models[model_key] = None
                 continue
@@ -267,6 +297,16 @@ def convert(level):
                     tid = Textures.texture_id(mat[surf][0] + mat[surf][1], diffuse)
                     if tid not in tx.entries:
                         tid = Textures.texture_id(mat[surf][0] + mat[surf][1])
+                    if tid not in tx.entries and not mat[surf][1]:
+                        # Some jointed meshes (the Town T-Rex) name no bump map for a
+                        # surface the pack stores with one: try the level's bump maps
+                        # of the same stem (ABrnTrex06t2.bmp -> ABrnTrex06b8.bmp).
+                        stem = mat[surf][0].lower()[:-6]
+                        for bump in g.symbols.values():
+                            if bump.lower().startswith(stem) and bump.lower() != mat[surf][0].lower():
+                                for d in (diffuse, 1.0):
+                                    if Textures.texture_id(mat[surf][0] + bump, d) in tx.entries:
+                                        tid = Textures.texture_id(mat[surf][0] + bump, d)
                     if tid in tx.entries:
                         tex_id = tid
                         used_tex[tid] = mat[surf][0]
@@ -286,8 +326,10 @@ def convert(level):
                 parts.append(dict(offset=start, count=len(pos) // 3, texture=('%08x' % tex_id) if tex_id is not None else None,
                                   colour=colour))
             models[model_key] = dict(parts=parts)
-        # '$' objects without textures are physics and shadow shapes, never seen.
-        if models.get(model_key) and name.startswith('$') and all(p['texture'] is None for p in models[model_key]['parts']):
+        # '$' objects are the physics shapes of the object they are named after
+        # (textured or not); the engine never draws them, and the visible mesh
+        # serves for collision here.
+        if name.startswith('$'):
             continue
         if models.get(model_key):
             m = euler_matrix(rx, ry, rz)
@@ -316,12 +358,24 @@ def convert(level):
         by_name = {'%x_%g' % k: m for k, m in models.items() if m}
         instances = [i for i in instances if by_name[i['model']]['parts']]
         print(f'  {len(invisible)} invisible textures; {before - len(instances)} unseen objects dropped')
+    # '$' physics boxes painted with a flat debug colour (an 8x8 swatch, e.g. the red
+    # boxes over Jungle Road's terminus gate) sit over the real object: never drawn.
+    swatch = {'%08x' % t for t in used_tex if tx.entries[t]['w'] * tx.entries[t]['h'] <= 64}
+    by_name = {'%x_%g' % k: m for k, m in models.items() if m}
+    before = len(instances)
+    instances = [i for i in instances if not (i['name'].startswith('$') and
+                 all(p['texture'] in swatch for p in by_name[i['model']]['parts']))]
+    if before > len(instances):
+        print(f'  {before - len(instances)} debug-coloured physics boxes dropped')
     open(os.path.join(out, 'meshes.bin'), 'wb').write(blob)
 
     # Terrain: world-space vertices (float32 xyz) then triangles (uint32).
     terrain_info = None
     ter = None
-    wtd = os.path.join(DATA, f'{level}.wtd')
+    # as2 ships without an as2.wtd: its terrain is as4.wtd (same island corner as
+    # `as`, heights matching as2's objects).
+    TERRAIN_FILE = {'as2': 'as4'}
+    wtd = os.path.join(DATA, f'{TERRAIN_FILE.get(level, level)}.wtd')
     if os.path.exists(wtd):
         ter = Terrain(open(wtd, 'rb').read())
         pos, tris = ter.mesh()
@@ -331,12 +385,17 @@ def convert(level):
         terrain_info = dict(vertices=len(pos), triangles=len(tris))
         print(f'  terrain: {len(pos)} vertices, {len(tris)} triangles')
 
-    # The sea, drawn out to the horizon: only the beach level has one (its seabed
-    # runs on under the water, so no terrain test can tell it from an inland lake).
-    HORIZON_SEA = {'be': 'TBeachWater01-00'}
-    sea = None
+    # The sea, drawn out to the horizon, named per level (the seabed runs on under the
+    # water, so no terrain test can tell it from an inland lake). Where the level has no
+    # sea water entity, its far "Ocean" sheet (scrolling texture at sea level) names the
+    # height. as2 has no sea sheet but shares as's coast (its terrain, as4.wtd, falls to
+    # the same flat seabed), so it takes as's sea height. it, ij and sum are inland:
+    # their water is ponds and pools.
+    HORIZON_SEA = {'be': 'TBeachWater01-00', 'jr': 'Ocean-00', 'lab': 'TOcean-00', 'as': 'Tocean0-00',
+                   'as2': 7.545145034790039}
+    sea = HORIZON_SEA.get(level) if isinstance(HORIZON_SEA.get(level), float) else None
     for inst in instances:
-        if inst['cls'] == 'CEntityWater' and inst['name'] == HORIZON_SEA.get(level):
+        if inst['cls'] in ('CEntityWater', 'CInstance') and inst['name'] == HORIZON_SEA.get(level):
             sea = inst['pos'][2]
     print(f'  sea level: {sea}')
 
