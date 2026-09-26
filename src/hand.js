@@ -102,14 +102,22 @@ export class HandControls {
       if (ph.handStyle !== 'modern') return;
       if (e.touches.length === 2) { twist = angle(e.touches); start = null; return; }
       const t = e.changedTouches[0];
-      start = { x: t.clientX, y: t.clientY, lx: t.clientX, ly: t.clientY, time: performance.now(), id: t.identifier };
+      start = { x: t.clientX, y: t.clientY, lx: t.clientX, ly: t.clientY, time: performance.now(), id: t.identifier, dragging: false };
+      // Held still for a moment on a door, gate, lever or heavy thing: grab it there.
+      const s0 = start;
+      setTimeout(() => {
+        if (start !== s0 || ph.held || Math.hypot(s0.lx - s0.x, s0.ly - s0.y) > 12) return;
+        const ray = this.rayAt(s0.x, s0.y);
+        if (ph.modern?.touchGrab(ray.o, ray.d)) s0.dragging = true;
+      }, 220);
     }, { passive: true });
     c.addEventListener('touchmove', (e) => {
       if (ph.handStyle !== 'modern') return;
       if (twist !== null && e.touches.length === 2) { const a = angle(e.touches); ph.modern?.twist(a - twist); twist = a; return; }
       const t = [...e.changedTouches].find((t) => start && t.identifier === start.id);
       if (!t) return;
-      if (ph.held) ph.modern?.nudge((t.clientX - start.lx) * 0.004, -(t.clientY - start.ly) * 0.004);
+      if (start.dragging) ph.modern?.touchDrag(t.clientX - start.lx, t.clientY - start.ly, ph.player);
+      else if (ph.held) ph.modern?.nudge((t.clientX - start.lx) * 0.004, -(t.clientY - start.ly) * 0.004);
       start.lx = t.clientX; start.ly = t.clientY;
     }, { passive: true });
     c.addEventListener('touchend', (e) => {
@@ -118,9 +126,23 @@ export class HandControls {
       const t = [...e.changedTouches].find((t) => t.identifier === start.id);
       if (!t) return;
       const moved = Math.hypot(t.clientX - start.x, t.clientY - start.y), quick = performance.now() - start.time < 350;
+      const dragging = start.dragging;
       start = null;
+      if (dragging) { ph.modern?.touchRelease(); return; }
       if (moved < 12 && quick) this.tapAt(t.clientX, t.clientY);
     });
+  }
+
+  // The game-space ray through a point on the screen.
+  rayAt(x, y) {
+    const r = this.canvas.getBoundingClientRect();
+    const ndc = new THREE.Vector2(((x - r.left) / r.width) * 2 - 1, -((y - r.top) / r.height) * 2 + 1);
+    const ray = new THREE.Raycaster();
+    ray.setFromCamera(ndc, this.camera);
+    this.world.updateMatrixWorld();
+    const o = this.world.worldToLocal(ray.ray.origin.clone());
+    const d = this.world.worldToLocal(ray.ray.origin.clone().add(ray.ray.direction)).sub(o).normalize();
+    return { o, d };
   }
 
   tapAt(x, y) {

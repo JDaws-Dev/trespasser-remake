@@ -32,11 +32,15 @@ export class ModernHand {
     this.offset = new THREE.Vector2();   // touch drag: where on screen she holds it
     this.volumes = handVolumes(physics.logic);
     this.buttons = collisionElements(physics.logic);
-    // The highlight: see-through copies of the targeted object's parts, drawn over it.
+    // The highlight: a thin bright rim (an inverted hull: the object's parts drawn back
+    // faces only, grown about its middle by a few millimetres per metre of distance, so
+    // only an outline shows around it) and a faint warm tint over it. Two extra draws
+    // per part, cheap on phones.
     this.glowMat = new THREE.MeshBasicMaterial({
-      color: 0xffe2a0, transparent: true, opacity: 0.22, blending: THREE.AdditiveBlending,
+      color: 0xffe2a0, transparent: true, opacity: 0.1, blending: THREE.AdditiveBlending,
       depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
     });
+    this.rimMat = new THREE.MeshBasicMaterial({ color: 0xffd27a, side: THREE.BackSide, fog: false });
     this.glow = new THREE.Group();
     this.glow.renderOrder = 5;
     game.world.add(this.glow);
@@ -113,7 +117,7 @@ export class ModernHand {
     const ph = this.ph;
     if (this.press) { this.hint = ''; this.setGlow(null); return false; }
     if (this.drag) {
-      if (!m.down) this.endDrag();
+      if (!m.down && !this.touchHeld) this.endDrag();
       else {
         // The view holds still; the mouse moves the grabbed point: across with the
         // mouse's sideways motion, toward or away from her with its forward motion
@@ -163,18 +167,23 @@ export class ModernHand {
       this.setGlow(null);
       return true;
     }
-    if (hint === 'Open' || hint === 'Push' || hint === 'Pull') {
-      // Grab that point of it; it follows the view while the button is held.
-      const bt = e.body.translation(), br = e.body.rotation();
-      const local = t.point.clone().sub(_v.set(bt.x, bt.y, bt.z)).applyQuaternion(_q.set(br.x, br.y, br.z, br.w).invert());
-      const localN = (t.normal || _v2.set(0, 0, 1)).clone().applyQuaternion(_q.set(br.x, br.y, br.z, br.w).invert());
-      this.drag = { entry: e, local, localN, goal: t.point.clone() };
-      ph.hand.drag = { point: t.point.clone(), normal: (t.normal || new THREE.Vector3(0, 0, 1)).clone() };
-      e.body.wakeUp();
-      ph.live.add(e);
-      return true;
-    }
+    if (hint === 'Open' || hint === 'Push' || hint === 'Pull') return this.startDrag(t);
     return false;
+  }
+
+  // Grab that point of it: while the button (or finger) is held, the mouse (or finger)
+  // moves the point and the thing follows it along whatever holds it.
+  startDrag(t) {
+    const ph = this.ph, e = t.entry;
+    const bt = e.body.translation(), br = e.body.rotation();
+    const inv = new THREE.Quaternion(br.x, br.y, br.z, br.w).invert();
+    const normal = t.normal || new THREE.Vector3(0, 0, 1);
+    this.drag = { entry: e, local: t.point.clone().sub(_v.set(bt.x, bt.y, bt.z)).applyQuaternion(inv),
+                  localN: normal.clone().applyQuaternion(inv), goal: t.point.clone() };
+    ph.hand.drag = { point: t.point.clone(), normal: normal.clone() };
+    e.body.wakeUp();
+    ph.live.add(e);
+    return true;
   }
 
   drop() { this.ph.release(); }
@@ -280,6 +289,25 @@ export class ModernHand {
     return this.act(t, player, origin);
   }
 
+  // Touch: a finger held on a door, gate, lever or heavy thing grabs it there.
+  touchGrab(origin, dir) {
+    if (this.ph.held || this.drag) return false;
+    const t = this.pick(origin, dir);
+    if (!t || !(t.hint === 'Open' || t.hint === 'Push' || t.hint === 'Pull')) return false;
+    this.touchHeld = true;
+    return this.startDrag(t);
+  }
+
+  // The finger moved (pixels on screen) while dragging: across, and up = push away.
+  touchDrag(dx, dy, player) {
+    if (!this.drag) return;
+    const right = _v.set(Math.cos(player.yaw), Math.sin(player.yaw), 0);
+    const ahead = _v2.set(-Math.sin(player.yaw), Math.cos(player.yaw), 0);
+    this.drag.goal.addScaledVector(right, dx * 0.006).addScaledVector(ahead, -dy * 0.006);
+  }
+
+  touchRelease() { this.touchHeld = false; this.endDrag(); }
+
   // Touch drag while holding: move it about the screen (metres, clamped).
   nudge(dx, dy) {
     this.offset.x = THREE.MathUtils.clamp(this.offset.x + dx, -0.45, 0.45);
@@ -294,17 +322,34 @@ export class ModernHand {
     this.glowFor = e;
     if (!e) return;
     for (const { mesh } of this.ph.refs[e.index] || []) {
-      const g = new THREE.Mesh(mesh.geometry, this.glowMat);
-      g.matrixAutoUpdate = false;
-      g.frustumCulled = false;
-      this.glow.add(g);
+      for (const mat of [this.rimMat, this.glowMat]) {
+        const g = new THREE.Mesh(mesh.geometry, mat);
+        g.matrixAutoUpdate = false;
+        g.frustumCulled = false;
+        this.glow.add(g);
+      }
     }
+    // The model's middle and half size (model space), to grow the rim about.
+    const b = this.ph.modelBounds(e.inst.model);
+    this.glowC = b.getCenter(new THREE.Vector3());
+    this.glowH = b.getSize(new THREE.Vector3()).multiplyScalar(0.5).max(new THREE.Vector3(0.01, 0.01, 0.01));
     this.placeGlow();
   }
 
   placeGlow() {
-    const parts = this.ph.refs[this.glowFor.index] || [];
-    parts.forEach(({ mesh, i }, k) => { const g = this.glow.children[k]; if (g) mesh.getMatrixAt(i, g.matrix); });
+    const e = this.glowFor, parts = this.ph.refs[e.index] || [];
+    // Rim width in metres: 6 mm, plus 3 mm for every metre away.
+    const dist = this.target?.dist ?? 1;
+    const w = 0.006 + 0.003 * dist, sc = e.scale || 1, c = this.glowC, h = this.glowH;
+    const grow = _m.makeTranslation(c.x, c.y, c.z)
+      .multiply(new THREE.Matrix4().makeScale(1 + w / (h.x * sc), 1 + w / (h.y * sc), 1 + w / (h.z * sc)))
+      .multiply(new THREE.Matrix4().makeTranslation(-c.x, -c.y, -c.z));
+    parts.forEach(({ mesh, i }, k) => {
+      const rim = this.glow.children[2 * k], tint = this.glow.children[2 * k + 1];
+      if (!rim) return;
+      mesh.getMatrixAt(i, tint.matrix);
+      rim.matrix.copy(tint.matrix).multiply(grow);
+    });
   }
 }
 
