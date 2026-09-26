@@ -16,7 +16,7 @@ This is a non-commercial fan project made for nostalgia. It is not affiliated wi
 
 ```sh
 npm install
-# Convert your own copy of the game (point DATA at its data/ folder, see tools/convert_level.py)
+# Convert your own copy of the game: the tools read its data/ folder from ~/Games/Trespasser/data
 for l in be jr ij it lab as as2 sum; do python3 tools/convert_level.py $l; python3 tools/export_sounds.py $l; python3 tools/export_anne.py $l; done
 python3 tools/export_menu.py
 python3 tools/detail_textures.py
