@@ -473,8 +473,10 @@ export class DinoAI {
         break;
       }
       case 'flee': {
-        // CActivityFlee::Act: away from the threat, blended with its own heading x 2.
-        const fx = -Math.sin(d.yaw) * 2 - to.x, fy = Math.cos(d.yaw) * 2 - to.y;
+        // CActivityFlee::Act: away from the threat, blended with its own heading x 2
+        // once that heading already leads away (so it turns first, then runs on).
+        const hx = -Math.sin(d.yaw), hy = Math.cos(d.yaw), k = 2 * Math.max(0, -(hx * to.x + hy * to.y));
+        const fx = hx * k - to.x, fy = hy * k - to.y;
         const l = Math.hypot(fx, fy) || 1;
         want = { x: fx / l, y: fy / l };
         speed = run;

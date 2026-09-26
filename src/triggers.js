@@ -115,7 +115,8 @@ export class Triggers {
     for (const d of this.game.dinos) this.dinoByName ||= new Map(), this.dinoByName.set(d.inst.name, d);
     this.dinoByName ||= new Map();
     const P = this.physics;
-    this.bodyByName = new Map((P?.entries || []).map((e) => [e.inst.name, e]));
+    // Physics bodies by name (physics.body also resolves attached parts to what they ride on).
+    this.bodyByName = { get: (n) => (n && P?.body ? P.body(n) : null) };
     for (const src of logic.triggers) {
       const c = src.cond;
       const life = c.FireCount === undefined || c.FireCount < 0 ? Infinity : c.FireCount;
@@ -786,7 +787,7 @@ export class Triggers {
     const sp = old[0]?.params || old[0]?.spec;
     const prev = old[0]?.params || { free: sp?.free || [false, false, false], drive: sp?.drive || 0, friction: sp?.friction || 0,
       min: sp?.angleMin || 0, max: sp?.angleMax || 0, breakStrength: sp?.breakStrength || 0 };
-    for (const j of old) P.removeJoint(j);
+    for (const j of old) P.removeJoint(j, true);
     master.body.wakeUp(); slave?.body.wakeUp();
     if (a.Enable === false) { this.freeze(master, false); if (slave) this.freeze(slave, false); return 0; }
     const given = { free: [a.XFree, a.YFree, a.ZFree], drive: a.Drive, friction: a.Friction, min: a.AngleMin, max: a.AngleMax, breakStrength: a.BreakStrength };

@@ -351,6 +351,27 @@ export class Physics {
     return this.byName.get(name) || null;
   }
 
+  // HIDESHOW: hide (not drawn, no collision, not simulated) or show a body again.
+  setVisible(name, visible) {
+    const e = this.body(name);
+    if (!e) return false;
+    if (!visible) {
+      if (this.hand.holding === e) this.handRelease();
+      if (this.held?.entry === e) this.release();
+      e.body.setEnabled(false);
+      this.live.delete(e);
+      _m.makeScale(0, 0, 0);
+    } else {
+      e.body.setEnabled(true);
+      e.body.wakeUp();
+      this.live.add(e);
+      _m.compose(e.curP, e.curQ, _s.setScalar(e.scale));
+    }
+    e.hidden = !visible;
+    for (const { mesh, i } of this.refs[e.index] || []) { mesh.setMatrixAt(i, _m); mesh.instanceMatrix.needsUpdate = true; }
+    return true;
+  }
+
   // A named helper's placement ({pos:[x,y,z], rot:[[...]]}), e.g. an Emit* or TeleportDest*.
   marker(name) { return this.markers[name] || null; }
 
