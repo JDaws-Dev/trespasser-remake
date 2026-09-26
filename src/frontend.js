@@ -22,6 +22,8 @@ export const LEVELS = [
   ['lab', 'Lab'], ['as', 'Ascent'], ['as2', 'Ascent 2'], ['sum', 'Summit'],
 ];
 // uidlgs.cpp g_aszSCNImage: the loader's picture for each scene.
+// The loader's steps, in the order main.js goes through them (see loadProgress).
+const STEPS = ['download', 'world', 'painting', 'collision', 'physics', 'finishing'];
 const LOADER_IMAGE = { as: 'li_a1', as2: 'li_a2', be: 'li_be', ij: 'li_ij', it: 'li_it', jr: 'li_jr', lab: 'li_lab', pv: 'li_pv', sum: 'li_sum' };
 // trespass.rc strings.
 const IDS_RESTARTLEVEL = 'Do you wish to restart this level?';
@@ -279,9 +281,12 @@ class Win {
       case 'progress': {
         e = el('div', 'fe-progress', this.el);
         place(e, l, t, r - l, b - t);
+        // Two fills of one colour: `creep`, a CSS animation that keeps moving on the
+        // compositor through long synchronous work, and `fill`, set from real progress
+        // whenever script runs. The bar shows whichever is further along.
+        e.creep = el('i', '', e);
         e.fill = el('i', '', e);
-        e.fill.style.background = `rgb(${c.color.join(',')})`;
-        e.fill.style.transform = 'scaleX(0)';
+        for (const f of [e.creep, e.fill]) { f.style.background = `rgb(${c.color.join(',')})`; f.style.transform = 'scaleX(0)'; }
         break;
       }
       default:
@@ -353,8 +358,13 @@ class Win {
     e.thumb.style.left = (e.units > 1 ? (v / (e.units - 1)) * (w - 10) : 0) + 'px';
   }
 
-  // The fill is a scaled transform so a long glide (secs) runs on the compositor and
-  // keeps moving while level building holds up the page's main thread.
+  // Start the compositor-run creep: from `from` towards `to` over `secs`, slowing as it goes.
+  creep(id, from, to, secs) {
+    const e = this.get(id);
+    e?.creep.animate([{ transform: `scaleX(${from})` }, { transform: `scaleX(${to})` }],
+      { duration: secs * 1000, easing: 'cubic-bezier(.1, .75, .25, 1)', fill: 'forwards' });
+  }
+
   setProgress(id, f, secs = 0) {
     const e = this.get(id);
     if (!e) return;
@@ -483,6 +493,9 @@ class FrontEnd {
       const t = src.textContent || '';
       const i = phases.findIndex((p) => t.startsWith(p));
       if (i >= 0) this.phase = Math.max(this.phase, i + 1);
+      // "Building physics… 53%": a step's own progress, as loadProgress() takes it.
+      const pc = /(\d+(?:\.\d+)?)\s*%/.exec(t);
+      if (i >= 0 && pc) this.loadProgress(i + 1, pc[1] / 100);
     };
     new MutationObserver(read).observe(src, { childList: true, characterData: true, subtree: true });
     new MutationObserver(() => { if (!src.isConnected) this.phase = Math.max(this.phase, 5); }).observe(document.body, { childList: true });
@@ -511,6 +524,18 @@ class FrontEnd {
     try { again = sessionStorage.getItem('trespasser.ctxlost') === location.pathname + location.search; sessionStorage.setItem('trespasser.ctxlost', location.pathname + url(LEVEL, this.restoring)); } catch (e) { /* private mode */ }
     if (again) { document.querySelector('.fe-restoring').textContent = 'The graphics device was lost. Reload the page to continue.'; return; }
     go(LEVEL, this.restoring);
+  }
+
+  // Progress within a loading step, for code that does long work in chunks:
+  // front.loadProgress('physics', 0.4). Steps: 'download', 'world', 'painting',
+  // 'collision', 'physics', 'finishing' (or their index 0-5). The loader's top bar
+  // shows it within that step's share; writing "Building physics… 40%" into #loading
+  // does the same.
+  loadProgress(step, fraction) {
+    const i = typeof step === 'number' ? step : STEPS.indexOf(step);
+    if (i < 0 || !(fraction >= 0)) return;
+    this.phase = Math.max(this.phase, i);
+    if (i === this.phase) this.sub = { i, f: Math.min(1, fraction), at: performance.now() };
   }
 
   whenReady() { return this.ui ? Promise.resolve() : new Promise((r) => this.readyWaiters.push(r)); }
@@ -902,17 +927,29 @@ class FrontEnd {
     win.add({ type: 'textbox', visible: 1, id: 102, rect: [0, 15, 320, 40], text: IDS_LOADING_LEVEL, size: 14, flags: 0x25 });
     this.push(win, { kind: 'screen' });
 
-    // Each of main.js's phases sets the bar gliding towards the next milestone; the glide
-    // is a CSS transition, so it carries on through the long synchronous steps (shader
-    // compiles, terrain baking, the physics build) when no script can run.
+    // Each of main.js's steps moves the bar to its milestone (or within it, from
+    // loadProgress); meanwhile a creep animation started now keeps the bar moving
+    // through the long synchronous steps (shader compiles, terrain baking, physics),
+    // when no script runs to update it. A transition can't do that: it only starts
+    // on a rendered frame, and a step that blocks begins before the next one.
     const MILESTONE = [0.45, 0.6, 0.72, 0.8, 0.95, 0.98, 1];
-    const GLIDE = [20, 12, 15, 20, 40, 5, 0.3];
-    let phase = -1, copy = 0;
+    let phase = -1, copy = 0, subAt = 0;
     win.get(102).classList.add('fe-blink');
+    win.creep(100, 0, 0.97, 90);
+    win.creep(101, 0, 1, 25);
     const poll = setInterval(() => {
-      if (this.phase !== phase) { phase = this.phase; win.setProgress(100, MILESTONE[phase], GLIDE[phase]); }
+      const sub = this.sub;
+      if (sub && sub.i === this.phase && sub.at !== subAt) {
+        subAt = sub.at;
+        phase = this.phase;
+        const lo = phase ? MILESTONE[phase - 1] : 0, hi = MILESTONE[phase];
+        win.setProgress(100, lo + (hi - lo) * sub.f, 0.3);
+      } else if (this.phase !== phase) {
+        phase = this.phase;
+        win.setProgress(100, phase ? MILESTONE[phase - 1] : 0, 0.3);
+      }
       const c = phase >= 1 ? 1 : 1 - Math.exp(-this.fetched / 60);
-      if (c > copy + 0.005) { copy = c; win.setProgress(101, c, 1.5); }
+      if (c > copy + 0.005) { copy = c; win.setProgress(101, c, 0.3); }
     }, 150);
     await this.whenReady();
     clearInterval(poll);
