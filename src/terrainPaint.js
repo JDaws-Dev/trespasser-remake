@@ -116,7 +116,7 @@ function terrainMaterial(renderer, map) {
 // full detail into a small pool of targets that follows her.
 const NEAR_PIXELS = matchMedia('(pointer: coarse)').matches ? 1024 : 2048;
 
-export function paintTerrain(renderer, terrainMesh, decals, { seaLevel = null } = {}) {
+export function paintTerrain(renderer, terrainMesh, decals, { seaLevel = null, water = [] } = {}) {
   const geo = terrainMesh.geometry;
   geo.computeBoundingBox();
   const box = geo.boundingBox;
@@ -205,7 +205,7 @@ export function paintTerrain(renderer, terrainMesh, decals, { seaLevel = null } 
   const near = new Map();   // tile key -> pool target currently holding it
   // Desktop: blades of grass around the player where the ground is painted grass.
   const grass = TRIPLANAR && new URLSearchParams(location.search).get('grass') !== '0'
-    ? new Grass({ renderer, bakeColour: bake, terrainGeometry: geo, time: gaitUniforms.uTime, seaLevel }) : null;
+    ? new Grass({ renderer, bakeColour: bake, terrainGeometry: geo, time: gaitUniforms.uTime, seaLevel, water }) : null;
   if (grass) group.add(grass.mesh);
 
   group.focus = (x, y, z) => {

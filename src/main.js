@@ -77,7 +77,7 @@ group.traverse((o) => { if (o.material && o.material.isMeshStandardMaterial) lit
 let painted = null;
 if (terrain) {
   loading.textContent = 'Painting the terrain…';
-  painted = paintTerrain(renderer, terrain, decals, { seaLevel: info.sea });
+  painted = paintTerrain(renderer, terrain, decals, { seaLevel: info.sea, water: group.children.filter((m) => m.userData.cls === 'CEntityWater') });
   painted.traverse((o) => { if (o.material) lit.add(o.material); });
   world.add(painted);
   terrain.visible = false;   // still used for ground height

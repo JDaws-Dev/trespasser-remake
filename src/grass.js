@@ -15,7 +15,8 @@ const RECENTRE = 10;
 export class Grass {
   // bakeColour(target, left, bottom, size): paints the terrain's colour for that
   // square into target. terrainGeometry: the whole terrain, in game space.
-  constructor({ renderer, bakeColour, terrainGeometry, time, seaLevel = null }) {
+  // water: the level's pond surfaces (instanced meshes, game space); no grass under them.
+  constructor({ renderer, bakeColour, terrainGeometry, time, seaLevel = null, water = [] }) {
     this.renderer = renderer;
     this.bakeColour = bakeColour;
     const opts = { minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, generateMipmaps: false, depthBuffer: false };
@@ -30,6 +31,24 @@ export class Grass {
       side: THREE.DoubleSide,
     });
     this.heightScene.add(new THREE.Mesh(terrainGeometry, this.heightMat));
+    // The highest pond surface over each point, relative to the player like the heights;
+    // green marks where there is one.
+    this.water = new THREE.WebGLRenderTarget(MAP_PIXELS, MAP_PIXELS, { ...opts, type: THREE.HalfFloatType, depthBuffer: true });
+    this.waterScene = new THREE.Scene();
+    this.waterMat = new THREE.ShaderMaterial({
+      uniforms: { uBase: { value: 0 } },
+      vertexShader: 'varying float vZ; void main() { vec4 p = modelMatrix * instanceMatrix * vec4(position, 1.0); vZ = p.z; gl_Position = projectionMatrix * viewMatrix * p; }',
+      fragmentShader: 'uniform float uBase; varying float vZ; void main() { gl_FragColor = vec4(vZ - uBase, 1.0, 0.0, 1.0); }',
+      side: THREE.DoubleSide,
+    });
+    for (const m of water) {
+      const proxy = new THREE.InstancedMesh(m.geometry, this.waterMat, m.count);
+      proxy.instanceMatrix = m.instanceMatrix;
+      proxy.matrixAutoUpdate = false;
+      proxy.matrix.copy(m.matrix);
+      proxy.frustumCulled = false;
+      this.waterScene.add(proxy);
+    }
     this.cam = new THREE.OrthographicCamera(0, 1, 1, 0, -2000, 2000);
     this.cam.position.set(0, 0, 1000);
     this.cam.up.set(0, 1, 0);
@@ -43,6 +62,7 @@ export class Grass {
       uSea: { value: seaLevel ?? -1e5 },
       uColMap: { value: this.colour.texture },
       uHgtMap: { value: this.height.texture },
+      uWaterMap: { value: this.water.texture },
     };
 
     // One blade: a tapering strip of three segments, x across (-0.5..0.5), y up (0..1).
@@ -70,7 +90,7 @@ export class Grass {
       shader.vertexShader = shader.vertexShader
         .replace('#include <common>', `#include <common>
           uniform float uTime; uniform vec2 uCenter; uniform vec3 uMap; uniform float uBase; uniform float uSea;
-          uniform sampler2D uColMap; uniform sampler2D uHgtMap;
+          uniform sampler2D uColMap; uniform sampler2D uHgtMap; uniform sampler2D uWaterMap;
           attribute vec4 aBlade;
           varying vec3 vGrassCol;`)
         .replace('#include <beginnormal_vertex>', `
@@ -83,11 +103,12 @@ export class Grass {
           // (Not teal: the lagoon floor under the water is painted green-blue.)
           float grassy = smoothstep(0.37, 0.46, gc.g / (gc.r + gc.g + gc.b + 1e-4)) * smoothstep(0.012, 0.03, gc.g)
                        * (1.0 - smoothstep(0.4, 0.55, gc.b / (gc.g + 1e-4)));
-          // Not under the sea, nor on banks too steep to hold soil.
+          // Not under the sea or a pond (with a margin for the shore), nor on banks too steep to hold soil.
+          vec2 pond = textureLod(uWaterMap, muv, 0.0).rg;
           const float px = 1.0 / ${MAP_PIXELS.toFixed(1)};
           vec2 slope = vec2(textureLod(uHgtMap, muv + vec2(px, 0.0), 0.0).r - textureLod(uHgtMap, muv - vec2(px, 0.0), 0.0).r,
                             textureLod(uHgtMap, muv + vec2(0.0, px), 0.0).r - textureLod(uHgtMap, muv - vec2(0.0, px), 0.0).r) / (2.0 * px * uMap.z);
-          grassy *= step(uSea + 0.15, gz) * (1.0 - smoothstep(0.7, 1.1, length(slope)));
+          grassy *= step(uSea + 0.3, gz) * (1.0 - step(0.5, pond.g) * step(gz, pond.r + uBase + 0.3)) * (1.0 - smoothstep(0.7, 1.1, length(slope)));
           float d = length(rel);
           float keep = step(aBlade.w, grassy) * (1.0 - smoothstep(${(RADIUS * 0.4).toFixed(1)}, ${RADIUS.toFixed(1)}, d));
           float hgt = (0.18 + 0.38 * aBlade.z * aBlade.z) * keep;
@@ -119,6 +140,7 @@ export class Grass {
     this.mesh.receiveShadow = true;
     this.mesh.name = 'grass';
     this.centre = null;
+    window.__grass = this;   // for automated tests
   }
 
   // x, y, z: the player, in game space.
@@ -139,6 +161,11 @@ export class Grass {
     r.setClearColor(0x000000, 1);
     r.clear();
     r.render(this.heightScene, c);
+    this.waterMat.uniforms.uBase.value = z;
+    r.setRenderTarget(this.water);
+    r.setClearColor(0x000000, 1);
+    r.clear();
+    if (this.waterScene.children.length) r.render(this.waterScene, c);
     r.setClearColor(prevClear, prevAlpha);
     r.setRenderTarget(prev);
   }
