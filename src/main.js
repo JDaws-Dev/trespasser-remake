@@ -41,7 +41,7 @@ const sea = new THREE.Mesh(
 sea.renderOrder = 9;
 world.add(sea);
 
-const camera = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.05, 2000);
+const camera = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.05, 4000);
 scene.add(camera);
 
 addEventListener('resize', () => {
@@ -55,6 +55,23 @@ const hud = document.getElementById('hud');
 
 const { group, info, terrain, decals, seaLevel, partGeoms } = await loadLevel(`levels/${LEVEL}`, (s) => (loading.textContent = s));
 world.add(group);
+
+// The sky, as Trespasser draws it: a cloud texture tiled across a high flat plane
+// that follows the player and fades into the fog towards the horizon.
+const skyInst = info.instances.find((i) => i.cls === 'CSky');
+const skyTex = skyInst && info.models[skyInst.model]?.parts[0]?.texture;
+let skyPlane = null;
+if (skyTex) {
+  const tex = new THREE.TextureLoader().load(`levels/${LEVEL}/tex/${skyTex}.png`);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(24, 24);
+  skyPlane = new THREE.Mesh(new THREE.PlaneGeometry(9000, 9000),
+    new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide, fog: true, depthWrite: false }));
+  skyPlane.renderOrder = -1;
+  world.add(skyPlane);
+  scene.fog.far = 1600;
+}
 // The open sea reaches the horizon at the level of the largest water surface.
 sea.position.z = (seaLevel ?? 0) - 0.05;
 if (terrain) {
@@ -127,5 +144,6 @@ renderer.setAnimationLoop(() => {
   camera.quaternion.setFromEuler(lookEuler);
   camera.quaternion.premultiply(world.quaternion);
 
+  if (skyPlane) skyPlane.position.set(player.pos.x, player.pos.y, player.pos.z + 350);
   renderer.render(scene, camera);
 });
