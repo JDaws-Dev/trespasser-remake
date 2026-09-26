@@ -328,8 +328,9 @@ def convert(level):
             models[model_key] = dict(parts=parts)
         # '$' objects are the physics shapes of the object they are named after
         # (textured or not); the engine never draws them, and the visible mesh
-        # serves for collision here.
-        if name.startswith('$'):
+        # serves for collision here. 'Occ_' objects are invisible occluders
+        # (visibility-culling hints), never drawn either.
+        if name.startswith('$') or name.startswith('Occ_'):
             continue
         if models.get(model_key):
             m = euler_matrix(rx, ry, rz)
