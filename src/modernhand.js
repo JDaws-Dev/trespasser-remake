@@ -115,7 +115,13 @@ export class ModernHand {
   // Returns true when the view should hold still (turning what she holds).
   update(player, m) {
     const ph = this.ph;
-    if (this.press) { this.hint = ''; this.setGlow(null); return false; }
+    if (this.press) {
+      // Held on (the button or finger still down): the hand stays pressed on it, as the
+      // as2 elevator's buttons want (it moves only while the hand is in their box).
+      this.press.held = !!(m.down || this.touchHeld);
+      if (this.ph.hand.press) this.ph.hand.press.held = this.press.held;
+      this.hint = ''; this.setGlow(null); return false;
+    }
     if (this.drag) {
       if (!m.down && !this.touchHeld) this.endDrag();
       else {
@@ -210,7 +216,7 @@ export class ModernHand {
     const dir = t.point.clone().sub(origin).normalize();
     this.press = { point: t.point.clone(), dir, t: 0, entry: t.entry || null, from: this.ph.shoulder(player) };
     // For the arm (anne.js plays the reach, finger press and return from this).
-    this.ph.hand.press = { point: t.point.clone(), normal: (t.normal || dir.clone().negate()).clone(), time: performance.now() };
+    this.ph.hand.press = { point: t.point.clone(), normal: (t.normal || dir.clone().negate()).clone(), time: performance.now(), held: true };
   }
 
   // Each physics step: drag the grabbed point, or move the pressing hand.
@@ -246,6 +252,7 @@ export class ModernHand {
     if (this.press) {
       const pr = this.press;
       pr.t += STEP;
+      if (pr.held && pr.t > 0.3) pr.t = 0.3;   // kept against it while held
       // Out (0.25 s), held against it (0.25 s), back (0.25 s).
       const out = Math.min(1, pr.t / 0.25), back = Math.max(0, (pr.t - 0.5) / 0.25);
       const k = THREE.MathUtils.smoothstep(out - back, 0, 1);
@@ -291,8 +298,9 @@ export class ModernHand {
 
   // Touch: a finger held on a door, gate, lever or heavy thing grabs it there.
   touchGrab(origin, dir) {
-    if (this.ph.held || this.drag) return false;
+    if (this.ph.held || this.drag || this.press) return false;
     const t = this.pick(origin, dir);
+    if (t?.hint === 'Press') { this.touchHeld = true; this.startPress(t, this.ph.player); return true; }   // held on a button
     if (!t || !(t.hint === 'Open' || t.hint === 'Push' || t.hint === 'Pull')) return false;
     this.touchHeld = true;
     return this.startDrag(t);
@@ -368,7 +376,12 @@ export class ModernHand {
 function handVolumes(logic) {
   const out = [];
   for (const t of logic?.triggers || []) {
-    if (t.kind !== 'location' || !String(t.cond?.TriggerActivate || '').includes('AnneHand')) continue;
+    if (t.kind !== 'location') continue;
+    // The hand's own (TriggerActivate $AnneHand), or small boxes any object may enter
+    // (the as2 elevator's buttons: "ObjectInTrigger" with no activator named).
+    const act = String(t.cond?.TriggerActivate || '');
+    const anyObject = !act && (t.cond?.ObjectInTrigger || t.cond?.ObjectEnterTrigger);
+    if (!act.includes('AnneHand') && !anyObject) continue;
     // Not the big "point the finger" zones around a keypad: only things to press.
     if ((t.actions || []).every((a) => a.type === 'SUBSTITUTE_MESH')) continue;
     const half = (t.scale || 1) * Math.max(...(t.shape?.box?.[1] || [1]).map(Math.abs));
