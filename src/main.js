@@ -8,6 +8,7 @@ import { paintTerrain } from './terrainPaint.js';
 import { buildCollider, moveCapsule } from './collision.js';
 import { Game } from './game.js';
 import { Audio } from './audio.js';
+import { Atmosphere, setupRenderer } from './atmosphere.js';
 
 const LEVEL = new URLSearchParams(location.search).get('level') || 'be';
 const EYE_HEIGHT = 1.6;       // metres
@@ -18,11 +19,10 @@ const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'hi
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.setSize(innerWidth, innerHeight);
 document.body.prepend(renderer.domElement);
+setupRenderer(renderer);
+const PHONE = matchMedia('(pointer: coarse)').matches || /iPhone|iPad|Android/.test(navigator.userAgent);
 
 const scene = new THREE.Scene();
-const skyColour = new THREE.Color(0xc9d6de);
-scene.background = skyColour;
-scene.fog = new THREE.Fog(skyColour, 60, 700);
 
 // Trespasser is Z-up; three.js is Y-up. Everything from the level lives under
 // this root, turned once, so game coordinates are used everywhere else.
@@ -30,21 +30,9 @@ const world = new THREE.Group();
 world.rotation.x = -Math.PI / 2;
 scene.add(world);
 
-scene.add(new THREE.HemisphereLight(0xdfe8f0, 0x5a5040, 1.4));
-const sun = new THREE.DirectionalLight(0xfff1d6, 1.6);
-sun.position.set(-0.4, 0.8, 0.3);
-scene.add(sun);
-
-// The sea: a flat plane at sea level stretching past the fog.
-const sea = new THREE.Mesh(
-  new THREE.PlaneGeometry(20000, 20000),
-  new THREE.MeshLambertMaterial({ color: 0x2e6f78, transparent: true, opacity: 0.72, depthWrite: false }),
-);
-sea.renderOrder = 9;
-world.add(sea);
-
 const camera = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.05, 4000);
 scene.add(camera);
+const atmosphere = new Atmosphere({ renderer, scene, camera, world, phone: PHONE });
 
 addEventListener('resize', () => {
   renderer.setSize(innerWidth, innerHeight);
@@ -68,20 +56,26 @@ if (skyTex) {
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
   tex.repeat.set(24, 24);
+  tex.anisotropy = 8;
+  // Drawn over the sky dome, thinning towards the horizon where the dome and haze take over.
   skyPlane = new THREE.Mesh(new THREE.PlaneGeometry(9000, 9000),
-    new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide, fog: true, depthWrite: false }));
+    new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide, fog: true, depthWrite: false, transparent: true, opacity: 0.9 }));
   skyPlane.renderOrder = -1;
   world.add(skyPlane);
-  scene.fog.far = 1600;
 }
 // The open sea reaches the horizon (only where the level has one).
-sea.visible = info.sea != null;
-sea.position.z = (info.sea ?? 0) - 0.05;
+if (info.sea != null) atmosphere.makeSea(world, info.sea, '.');
+// Every lit material takes the sun's cascaded shadows.
+const lit = new Set();
+group.traverse((o) => { if (o.material && o.material.isMeshStandardMaterial) lit.add(o.material); });
 if (terrain) {
   loading.textContent = 'Painting the terrain…';
-  world.add(paintTerrain(renderer, terrain, decals));
+  const painted = paintTerrain(renderer, terrain, decals);
+  painted.traverse((o) => { if (o.material) lit.add(o.material); });
+  world.add(painted);
   terrain.visible = false;   // still used for ground height
 }
+for (const m of lit) atmosphere.setupMaterial(m);
 loading.textContent = 'Building collision…';
 const collider = buildCollider(terrain, info, partGeoms);
 loading.remove();
@@ -117,7 +111,7 @@ if (at) {
   player.pos.set(x, y, groundAt(x, y) + 0.5);
   if (!Number.isNaN(yaw)) player.yaw = yaw;
 }
-window.__player = player; window.__scene = scene;   // for automated tests
+window.__player = player; window.__scene = scene; window.__renderer = renderer; window.__camera = camera;   // for automated tests
 const input = new Input(renderer.domElement);
 const audio = new Audio(`levels/${LEVEL}`);
 const game = new Game({ scene, world, camera, info, refs, collider, groundAt, hud, level: LEVEL, audio });
@@ -160,6 +154,7 @@ renderer.setAnimationLoop(() => {
   camera.quaternion.premultiply(world.quaternion);
 
   if (skyPlane) skyPlane.position.set(player.pos.x, player.pos.y, player.pos.z + 350);
+  atmosphere.update(dt);
   audio.updateListener(new THREE.Vector3(player.pos.x, player.pos.y, player.pos.z + EYE_HEIGHT),
     new THREE.Vector3(-Math.sin(player.yaw), Math.cos(player.yaw), 0), new THREE.Vector3(0, 0, 1));
   renderer.render(scene, camera);

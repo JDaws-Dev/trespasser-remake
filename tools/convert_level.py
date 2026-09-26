@@ -297,11 +297,25 @@ def convert(level):
 
     print(f'  {len(instances)} placed objects, {sum(1 for m in models.values() if m)} meshes, '
           f'{len(used_tex)} textures used, {missing} surface textures not found')
+    invisible = set()
     for tid, name in used_tex.items():
         e = tx.entries[tid]
         path = os.path.join(out, 'tex', '%08x.png' % tid)
-        if True:
-            write_png(path, e['w'], e['h'], tx.rgba(e))
+        rgba = tx.rgba(e)
+        # Fully transparent textures mark footstep-sound regions and the like;
+        # nothing of them is ever seen, so their surfaces are dropped.
+        if not any(rgba[3::4]):
+            invisible.add('%08x' % tid)
+            continue
+        write_png(path, e['w'], e['h'], rgba)
+    if invisible:
+        for m in models.values():
+            if m:
+                m['parts'] = [p for p in m['parts'] if p['texture'] not in invisible]
+        before = len(instances)
+        by_name = {'%x_%g' % k: m for k, m in models.items() if m}
+        instances = [i for i in instances if by_name[i['model']]['parts']]
+        print(f'  {len(invisible)} invisible textures; {before - len(instances)} unseen objects dropped')
     open(os.path.join(out, 'meshes.bin'), 'wb').write(blob)
 
     # Terrain: world-space vertices (float32 xyz) then triangles (uint32).

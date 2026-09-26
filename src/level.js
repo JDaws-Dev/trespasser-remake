@@ -12,7 +12,7 @@ function loadTexture(url) {
   const tex = textureLoader.load(url, done, undefined, done);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-  tex.anisotropy = 4;
+  tex.anisotropy = 8;
   return tex;
 }
 
@@ -94,10 +94,10 @@ export async function loadLevel(base, onProgress = () => {}) {
         textures.set(part.texture, tex);
       }
       // alphaTest keeps foliage cut-outs crisp without sorting transparent geometry.
-      mat = new THREE.MeshLambertMaterial({ map: tex, alphaTest: 0.5, side: THREE.DoubleSide });
+      mat = new THREE.MeshStandardMaterial({ map: tex, alphaTest: 0.5, side: THREE.DoubleSide, roughness: 0.88, metalness: 0 });
     } else {
       const [r, g, b] = part.colour;
-      mat = new THREE.MeshLambertMaterial({ color: new THREE.Color(r / 255, g / 255, b / 255) });
+      mat = new THREE.MeshStandardMaterial({ color: new THREE.Color(r / 255, g / 255, b / 255), roughness: 0.8, metalness: 0 });
     }
     materials.set(key, mat);
     return mat;
@@ -125,6 +125,9 @@ export async function loadLevel(base, onProgress = () => {}) {
   for (const inst of info.instances) {
     if (only && !only.includes(inst.cls)) continue;
     if (hide && hide.includes(inst.cls)) continue;
+    // The original's far-sea sheets (scrolling water textures at sea level) are
+    // replaced by the reflecting sea in main.js.
+    if (info.sea != null && Math.abs(inst.pos[2] - info.sea) < 0.05 && inst.props && ('DeltaX' in inst.props || 'Anim00' in inst.props)) continue;
     // Prototype objects are parked far outside the playable area; leave them out.
     if (inst.name.startsWith('P') && Math.hypot(inst.pos[0], inst.pos[1] + 700) < 200) continue;
     if (!byModel.has(inst.model)) byModel.set(inst.model, []);
@@ -152,13 +155,15 @@ export async function loadLevel(base, onProgress = () => {}) {
   }
 
   // Water surfaces: translucent, lit only a little, drawn after solid geometry.
-  const waterMat = new THREE.MeshLambertMaterial({
-    color: 0x2e6f78, transparent: true, opacity: 0.72, depthWrite: false, side: THREE.DoubleSide,
+  const waterMat = new THREE.MeshStandardMaterial({
+    color: 0x1f6b74, transparent: true, opacity: 0.6, depthWrite: false, side: THREE.DoubleSide, roughness: 0.35, metalness: 0, envMapIntensity: 0.5,
   });
   let seaLevel = null, seaScale = 0;
   const animalMaterials = new Map();
   for (const [key, list] of byModel) {
     const isWater = list[0].cls === 'CEntityWater';
+    // The level's own horizon-sea sheet is replaced by the reflecting sea (main.js).
+    if (isWater && info.sea != null && list.every((i) => Math.abs(i.pos[2] - info.sea) < 0.01)) continue;
     const isAnimal = list[0].cls === 'CAnimal';
     // Model-space bounds of the whole animal, for the gait shader.
     let bounds = null;
@@ -172,8 +177,11 @@ export async function loadLevel(base, onProgress = () => {}) {
       let material = isWater ? waterMat : mat;
       if (isAnimal) {
         // Animals get their own copy of the material with the gait shader in it.
-        if (!animalMaterials.has(mat)) animalMaterials.set(mat, gaitMaterial(mat, bounds));
-        material = animalMaterials.get(mat);
+        // Keyed per animal as well: two species can share a skin texture but not
+        // a body size, and the shader's bounds are the body's.
+        const gk = `${key}|${mat.uuid}`;
+        if (!animalMaterials.has(gk)) animalMaterials.set(gk, gaitMaterial(mat, bounds));
+        material = animalMaterials.get(gk);
       }
       const mesh = new THREE.InstancedMesh(geo, material, list.length);
       if (isAnimal) {
@@ -183,6 +191,7 @@ export async function loadLevel(base, onProgress = () => {}) {
         mesh.geometry.setAttribute('aSpeed', new THREE.InstancedBufferAttribute(new Float32Array(list.map((i) => (/raptor/i.test(i.name) ? 9 : 2.2))), 1));
       }
       if (isWater) mesh.renderOrder = 10;
+      else if (list[0].cls !== 'CSky') { mesh.castShadow = true; mesh.receiveShadow = true; }
       list.forEach((inst, i) => {
         (refs[inst.index] ||= []).push({ mesh, i });
         const r = inst.rot, s = inst.scale, p = inst.pos;
@@ -221,7 +230,8 @@ export async function loadLevel(base, onProgress = () => {}) {
       colours.set([c.r, c.g, c.b], i * 3);
     }
     geo.setAttribute('color', new THREE.BufferAttribute(colours, 3));
-    terrain = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ vertexColors: true }));
+    terrain = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1 }));
+    terrain.receiveShadow = true;
     group.add(terrain);
   }
 

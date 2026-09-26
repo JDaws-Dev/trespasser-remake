@@ -8,6 +8,42 @@ import * as THREE from 'three';
 const TILE_METRES = 256;
 const TILE_PIXELS = 512;   // 2 pixels per metre
 
+// Up close the baked colour (2 px/m) would blur into mush, so a fine tileable
+// grain and its normal map are laid over it at 0.4 m intervals; they fade out
+// with distance so the horizon keeps the painted colour.
+const DETAIL_METRES = 0.4;
+let detail = null;
+function detailTextures(renderer) {
+  if (detail) return detail;
+  const loader = new THREE.TextureLoader();
+  const aniso = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+  const grain = loader.load('detail/grain.png');
+  const normal = loader.load('detail/grain_n.png');
+  for (const t of [grain, normal]) { t.wrapS = t.wrapT = THREE.RepeatWrapping; t.anisotropy = aniso; }
+  normal.repeat.setScalar(TILE_METRES / DETAIL_METRES);
+  detail = { grain, normal };
+  return detail;
+}
+
+function terrainMaterial(renderer, map) {
+  const { grain, normal } = detailTextures(renderer);
+  const mat = new THREE.MeshStandardMaterial({ map, roughness: 0.95, metalness: 0, normalMap: normal, normalScale: new THREE.Vector2(0.35, 0.35) });
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uGrain = { value: grain };
+    shader.uniforms.uGrainRepeat = { value: TILE_METRES / DETAIL_METRES };
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', '#include <common>\nuniform sampler2D uGrain; uniform float uGrainRepeat;')
+      .replace('#include <map_fragment>', `#include <map_fragment>
+        {
+          float g = texture2D(uGrain, vMapUv * uGrainRepeat).r * 2.0;
+          float g2 = texture2D(uGrain, vMapUv * uGrainRepeat * 0.13 + 0.37).r * 2.0;   // a broader mottle
+          float fade = 1.0 - smoothstep(30.0, 140.0, length(vViewPosition));
+          diffuseColor.rgb *= mix(1.0, g * 0.85 + g2 * 0.15, 0.55 * fade);
+        }`);
+  };
+  return mat;
+}
+
 export function paintTerrain(renderer, terrainMesh, decals) {
   const geo = terrainMesh.geometry;
   geo.computeBoundingBox();
@@ -66,6 +102,7 @@ export function paintTerrain(renderer, terrainMesh, decals) {
       renderer.setRenderTarget(target);
       renderer.render(scene, cam);
       target.texture.wrapS = target.texture.wrapT = THREE.ClampToEdgeWrapping;
+      target.texture.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
 
       // This tile's piece of terrain, with UVs from world position.
       const piece = new THREE.BufferGeometry();
@@ -78,7 +115,8 @@ export function paintTerrain(renderer, terrainMesh, decals) {
       }
       piece.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
       piece.setIndex(tris);
-      const mesh = new THREE.Mesh(piece, new THREE.MeshLambertMaterial({ map: target.texture }));
+      const mesh = new THREE.Mesh(piece, terrainMaterial(renderer, target.texture));
+      mesh.receiveShadow = true;
       group.add(mesh);
     }
   }
