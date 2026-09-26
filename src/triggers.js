@@ -485,6 +485,10 @@ export class Triggers {
       for (const t of this.list) {
         if (t.kind !== 'creature' || !t.c.objects?.includes(d.inst.name)) continue;
         const c = t.c;
+        // Deviation from CreatureTrigger.cpp (which fires on any listed death and reads
+        // EvaluateAll only for '@' queries): with EvaluateAll, wait until all are dead,
+        // as the designers meant (ij's second raptor wave).
+        if (events.includes('die') && c.CreatureDie && c.EvaluateAll && !this.now(t)) continue;
         if ((events.includes('die') && c.CreatureDie) || (events.includes('wake') && c.CreatureWake) ||
             (events.includes('sleep') && c.CreatureSleep) ||
             (dmg > 0 && (c.CreatureDamagePoints !== undefined || c.CreatureCriticalDamage) && dmg > (c.CreatureDamagePoints || 0))) this.attempt(t);
