@@ -9,8 +9,53 @@
 <style>
   html, body { margin: 0; height: 100%; background: #000; overflow: hidden; touch-action: none; -webkit-user-select: none; user-select: none; }
   canvas { display: block; width: 100vw; height: 100vh; }
-  #hud { position: fixed; left: 0; right: 0; top: max(12px, env(safe-area-inset-top)); text-align: center;
-         font: 600 15px/1.3 -apple-system, "Segoe UI", sans-serif; color: #f2eee0; text-shadow: 0 1px 3px #000; pointer-events: none; }
+  :root { --ink: #f2eee0; --dim: #b9b39a; --blood: #b3261e; --edge-l: max(16px, env(safe-area-inset-left)); --edge-r: max(16px, env(safe-area-inset-right));
+          --edge-t: max(12px, env(safe-area-inset-top)); --edge-b: max(24px, env(safe-area-inset-bottom)); }
+  #hud { position: fixed; inset: 0; pointer-events: none; font: 600 15px/1.3 -apple-system, "Segoe UI", sans-serif; color: var(--ink);
+         text-shadow: 0 1px 3px #000; visibility: hidden; }
+  body.playing #hud { visibility: visible; }
+  #hp { position: absolute; left: var(--edge-l); top: var(--edge-t); display: flex; align-items: center; gap: 8px; }
+  #hp .bar { width: 140px; height: 8px; border-radius: 4px; background: rgba(0,0,0,.45); box-shadow: 0 0 0 1px rgba(255,255,255,.25); overflow: hidden; }
+  #hp .bar i { display: block; height: 100%; width: 100%; background: #d8cfa8; transition: width .25s ease-out; }
+  #hp b { font-variant-numeric: tabular-nums; min-width: 2.2em; }
+  #hp.low .bar i { background: #d33a2c; }
+  #hp.low b { color: #ff8a7a; }
+  #weapon { position: absolute; right: var(--edge-r); top: var(--edge-t); font-variant-numeric: tabular-nums; }
+  #weapon b { margin-left: 6px; font-size: 18px; }
+  #weapon .none { color: var(--dim); font-weight: 500; }
+  body.touch #weapon { right: calc(var(--edge-r) + 52px); }
+  #hint { position: absolute; left: 50%; top: calc(var(--edge-t) + 34px); transform: translateX(-50%); max-width: min(80vw, 560px); text-align: center;
+          padding: 6px 12px; border-radius: 6px; background: rgba(0,0,0,.35); opacity: 0; transition: opacity .3s; }
+  #hint.on { opacity: 1; }
+  #hint:empty { display: none; }
+  /* Damage: red edges that flash on a hit, and a slow heartbeat below 30 health. */
+  .vignette { position: fixed; inset: 0; pointer-events: none; opacity: 0;
+              background: radial-gradient(ellipse at center, transparent 45%, rgba(150,0,0,.55) 80%, rgba(110,0,0,.9) 100%); }
+  #lowhp.on { opacity: .5; animation: heartbeat 1.1s ease-in-out infinite; }
+  @keyframes hurt { to { opacity: 0; } }
+  @keyframes heartbeat { 0%, 100% { opacity: .45; } 15% { opacity: .95; } 30% { opacity: .55; } 45% { opacity: .85; } }
+  @keyframes shake {
+    0% { transform: translate(0, 0) scale(1.03); } 20% { transform: translate(-9px, 5px) scale(1.03); } 40% { transform: translate(8px, -6px) scale(1.03); }
+    60% { transform: translate(-5px, -3px) scale(1.03); } 80% { transform: translate(3px, 4px) scale(1.03); } 100% { transform: translate(0, 0) scale(1); } }
+  /* Start / pause and death screens. */
+  .screen { position: fixed; inset: 0; display: grid; place-items: center; overflow-y: auto; padding: var(--edge-t) var(--edge-r) var(--edge-b) var(--edge-l);
+            background: radial-gradient(ellipse at center, rgba(0,0,0,.45), rgba(0,0,0,.8)); color: var(--ink); font: 15px/1.4 -apple-system, "Segoe UI", sans-serif;
+            text-align: center; z-index: 10; }
+  .screen[hidden] { display: none; }
+  .screen h1 { margin: 0; font: 700 clamp(38px, 8vw, 64px)/1 Georgia, "Times New Roman", serif; letter-spacing: .06em; text-transform: uppercase; }
+  .screen .sub { margin: 8px 0 22px; color: var(--dim); font-size: 14px; }
+  #levels { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; max-width: 520px; margin: 0 auto 22px; }
+  #levels a { color: var(--ink); text-decoration: none; padding: 7px 12px; border-radius: 16px; border: 1px solid rgba(255,255,255,.25); font-size: 14px; }
+  #levels a.current { background: var(--ink); color: #111; border-color: var(--ink); }
+  .screen button { font: 700 17px -apple-system, "Segoe UI", sans-serif; letter-spacing: .08em; text-transform: uppercase; color: #111; background: var(--ink);
+                   border: 0; border-radius: 28px; padding: 14px 44px; cursor: pointer; }
+  #controls { margin: 16px auto 0; max-width: 460px; color: var(--dim); font-size: 13px; }
+  #death { background: radial-gradient(ellipse at center, rgba(60,0,0,.55), rgba(20,0,0,.9)); }
+  #death h1 { font-size: clamp(32px, 7vw, 54px); text-transform: none; letter-spacing: .02em; margin-bottom: 26px; }
+  @media (max-height: 460px) {
+    .screen .sub { margin: 4px 0 12px; } #levels { margin-bottom: 12px; } #controls { margin-top: 10px; }
+    .screen button { padding: 11px 38px; } #levels a { padding: 5px 11px; }
+  }
   #loading { position: fixed; inset: 0; display: grid; place-items: center; font: 14px -apple-system, sans-serif; color: #b9b39a; background: #000; }
   .stick { position: fixed; bottom: max(24px, env(safe-area-inset-bottom)); width: 132px; height: 132px; border-radius: 50%;
            border: 2px solid rgba(255,255,255,.25); background: rgba(0,0,0,.15); display: none; }
@@ -23,15 +68,38 @@
   body.touch .btn { display: grid; }
   #btn-fire { right: max(24px, env(safe-area-inset-right)); bottom: calc(max(24px, env(safe-area-inset-bottom)) + 150px); width: 84px; height: 84px; }
   #btn-grab { right: calc(max(24px, env(safe-area-inset-right)) + 100px); bottom: calc(max(24px, env(safe-area-inset-bottom)) + 160px); }
+  #btn-jump { right: calc(max(24px, env(safe-area-inset-right)) + 148px); bottom: calc(max(24px, env(safe-area-inset-bottom)) + 70px); }
+  #btn-pause { top: var(--edge-t); right: var(--edge-r); bottom: auto; width: 40px; height: 40px; font-size: 12px; }
+  /* The touch controls only make sense while playing. */
+  body.touch:not(.playing) .stick, body.touch:not(.playing) .btn { display: none; }
 </style>
 </head>
 <body>
 <div id="loading">Loading…</div>
+<div class="vignette" id="lowhp"></div>
+<div class="vignette" id="hurt"></div>
 <div id="hud"></div>
 <div class="stick" id="stickL"><i></i></div>
 <div class="stick" id="stickR"><i></i></div>
 <div class="btn" id="btn-fire">FIRE</div>
 <div class="btn" id="btn-grab">GRAB</div>
+<div class="btn" id="btn-jump">JUMP</div>
+<div class="btn" id="btn-pause">II</div>
+<div class="screen" id="menu" hidden>
+  <div>
+    <h1>Trespasser</h1>
+    <p class="sub">A browser remake of the 1998 game</p>
+    <nav id="levels"></nav>
+    <button id="play">Play</button>
+    <p id="controls"></p>
+  </div>
+</div>
+<div class="screen" id="death" hidden>
+  <div>
+    <h1>Anne is dead.</h1>
+    <button id="again">Try again</button>
+  </div>
+</div>
 <script type="module" src="/src/main.js"></script>
 </body>
 </html>

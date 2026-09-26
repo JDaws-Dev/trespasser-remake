@@ -1,4 +1,5 @@
 // Keyboard + mouse (pointer lock) on desktop; two touch sticks on phones.
+import { state } from './ui.js';
 export class Input {
   constructor(canvas) {
     this.keys = new Set();
@@ -6,13 +7,14 @@ export class Input {
     this.touch = matchMedia('(pointer: coarse)').matches;
     this.sticks = { L: { x: 0, y: 0, id: null }, R: { x: 0, y: 0, id: null } };
     this.pressed = new Set();   // one-shot keys, cleared each poll
-    this.buttons = { fire: false, grab: false };
+    this.buttons = { fire: false, grab: false, jump: false };
+    window.__input = this;   // for automated tests
 
     addEventListener('keydown', (e) => { if (!this.keys.has(e.code)) this.pressed.add(e.code); this.keys.add(e.code); });
     addEventListener('mousedown', (e) => { if (document.pointerLockElement === canvas && e.button === 0) this.pressed.add('Fire'); });
     addEventListener('keyup', (e) => this.keys.delete(e.code));
     addEventListener('blur', () => this.keys.clear());
-    canvas.addEventListener('click', () => { if (!this.touch) { try { canvas.requestPointerLock?.()?.catch?.(() => {}); } catch (e) { /* not allowed here */ } } });
+    canvas.addEventListener('click', () => { if (!this.touch && !state.paused) { try { canvas.requestPointerLock?.()?.catch?.(() => {}); } catch (e) { /* not allowed here */ } } });
     addEventListener('mousemove', (e) => {
       if (document.pointerLockElement === canvas) { this.mouse.x += e.movementX; this.mouse.y += e.movementY; }
     });
@@ -20,10 +22,11 @@ export class Input {
     if (this.touch) {
       document.body.classList.add('touch');
       for (const side of ['L', 'R']) this.bindStick(side);
-      for (const id of ['fire', 'grab']) {
+      for (const id of ['fire', 'grab', 'jump']) {
         const el = document.getElementById('btn-' + id);
         el.addEventListener('touchstart', (e) => { this.buttons[id] = true; this.pressed.add(id); e.preventDefault(); }, { passive: false });
-        const off = () => (this.buttons[id] = false);
+        // Each button tracks its own finger, so lifting a stick finger never releases it.
+        const off = (e) => { if (e.targetTouches.length === 0) this.buttons[id] = false; };
         el.addEventListener('touchend', off); el.addEventListener('touchcancel', off);
       }
     }
@@ -42,7 +45,13 @@ export class Input {
       s.x = dx / radius; s.y = dy / radius;
       knob.style.transform = `translate(${dx}px, ${dy}px)`;
     };
-    el.addEventListener('touchstart', (e) => { const t = e.changedTouches[0]; s.id = t.identifier; update(t); e.preventDefault(); }, { passive: false });
+    // Touches stay bound to the element they started on, so each stick only ever
+    // sees its own finger; a second finger on the same stick is ignored.
+    el.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+      if (s.id !== null) return;
+      const t = e.changedTouches[0]; s.id = t.identifier; update(t);
+    }, { passive: false });
     el.addEventListener('touchmove', (e) => {
       for (const t of e.changedTouches) if (t.identifier === s.id) update(t);
       e.preventDefault();
@@ -68,6 +77,8 @@ export class Input {
 
     const pressed = this.pressed;
     this.pressed = new Set();
+    // Behind the menu or death screen Anne stands still and nothing fires.
+    if (state.paused) return { touch: this.touch, fire: false, pickup: false, drop: false, forward: 0, strafe: 0, look: { x: 0, y: 0 }, run: false, jump: false };
     return {
       touch: this.touch,
       fire: pressed.has('Fire') || pressed.has('fire') || (k.has('KeyF')) || this.buttons.fire,
@@ -77,7 +88,7 @@ export class Input {
       strafe: Math.max(-1, Math.min(1, strafe)),
       look: { x: lookX, y: lookY },
       run: k.has('ShiftLeft') || k.has('ShiftRight') || Math.hypot(L.x, L.y) > 0.95,
-      jump: k.has('Space'),
+      jump: k.has('Space') || this.buttons.jump,
     };
   }
 }

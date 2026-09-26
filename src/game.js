@@ -2,6 +2,7 @@
 // dinosaurs with health, raptors that hunt Anne, and Anne's own health.
 // Game coordinates throughout (metres, Z up).
 import * as THREE from 'three';
+import { UI } from './ui.js';
 
 const RAPTOR_SPEED = 7.5, RAPTOR_TURN = 3.0, RAPTOR_SIGHT = 70, RAPTOR_BITE = 2.6;
 const RAPTOR_DAMAGE = 12, RAPTOR_BITE_COOLDOWN = 1.1;
@@ -24,6 +25,7 @@ export class Game {
       .map(({ inst, i }) => ({
         inst, index: i, taken: false, pos: new THREE.Vector3(...inst.pos),
         ammo: inst.props.MaxAmmo ?? 6,
+        name: inst.name.replace(/^P/, '').replace(/-\d+$/, '').replace(/Frame\d*$/, ''),
       }));
 
     // Dinosaurs: raptors hunt, the big ones wander.
@@ -51,6 +53,8 @@ export class Game {
     // The held gun is drawn from the same geometry as the pickup, parented to the camera.
     this.hand = new THREE.Group();
     camera.add(this.hand);
+
+    this.ui = new UI({ game: this, touch: matchMedia('(pointer: coarse)').matches, level });
   }
 
   showHint(text, seconds = 2) {
@@ -96,8 +100,7 @@ export class Game {
     this.hand.rotation.set(-Math.PI / 2, 0, 0);
     this.hand.scale.setScalar(best.inst.scale);
     this.hand.position.set(0.28, -0.22, -0.55);
-    const name = best.inst.name.replace(/^P/, '').replace(/-\d+$/, '').replace(/Frame\d*$/, '');
-    this.showHint(`${name}: ${best.ammo} rounds`, 2.5);
+    this.showHint(`Picked up the ${best.name}`, 2.5);
     return true;
   }
 
@@ -145,7 +148,6 @@ export class Game {
       if (target.hp <= 0) this.kill(target);
       else this.audio?.vocal(target.vocal, wasAwake ? 'Pain' : 'Snarl', target.pos);
     }
-    this.showHint(`${g.ammo} rounds`, 1);
   }
 
   kill(d) {
@@ -182,7 +184,7 @@ export class Game {
   }
 
   update(dt, player, input) {
-    if (this.dead) return;
+    if (this.dead || this.ui.paused) return;
     this.updateTriggers(player);
     this.cooldown = Math.max(0, this.cooldown - dt);
     if (input.pickup) this.tryPickup(player);
@@ -245,25 +247,18 @@ export class Game {
       }
     }
 
-    const alive = this.dinos.filter((d) => d.alive && d.raptor).length;
-    this.hud.textContent = [
-      `Health ${Math.max(0, Math.round(this.hp))}`,
-      this.gun ? `${this.gun.ammo} rounds` : 'No weapon',
-      this.hint,
-    ].filter(Boolean).join('   ·   ');
-    void alive;
+    this.ui.update({ hp: this.hp, maxHp: PLAYER_HP, gun: this.gun, hint: this.hint });
   }
 
   hurt(amount) {
+    if (this.dead) return;
     this.hp -= amount;
-    this.flash = 1;
-    if (this.hp <= 0 && !this.dead) {
+    this.ui.update({ hp: this.hp, maxHp: PLAYER_HP, gun: this.gun, hint: this.hint });
+    if (this.hp <= 0) {
       this.dead = true;
-      this.hud.textContent = 'Anne is dead.  Tap or press any key to try again.';
-      const again = () => location.reload();
-      addEventListener('keydown', again, { once: true });
-      addEventListener('touchstart', again, { once: true });
-      addEventListener('mousedown', again, { once: true });
+      this.ui.died();
+    } else {
+      this.ui.flash(amount / 25);
     }
   }
 }
