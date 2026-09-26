@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<title>Trespasser</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; touch-action: none; -webkit-user-select: none; user-select: none; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+  #hud { position: fixed; left: 0; right: 0; top: max(12px, env(safe-area-inset-top)); text-align: center;
+         font: 600 15px/1.3 -apple-system, "Segoe UI", sans-serif; color: #f2eee0; text-shadow: 0 1px 3px #000; pointer-events: none; }
+  #loading { position: fixed; inset: 0; display: grid; place-items: center; font: 14px -apple-system, sans-serif; color: #b9b39a; background: #000; }
+  .stick { position: fixed; bottom: max(24px, env(safe-area-inset-bottom)); width: 132px; height: 132px; border-radius: 50%;
+           border: 2px solid rgba(255,255,255,.25); background: rgba(0,0,0,.15); display: none; }
+  .stick i { position: absolute; left: 41px; top: 41px; width: 50px; height: 50px; border-radius: 50%; background: rgba(255,255,255,.35); }
+  #stickL { left: max(24px, env(safe-area-inset-left)); }
+  #stickR { right: max(24px, env(safe-area-inset-right)); }
+  body.touch .stick { display: block; }
+</style>
+</head>
+<body>
+<div id="loading">Loading…</div>
+<div id="hud"></div>
+<div class="stick" id="stickL"><i></i></div>
+<div class="stick" id="stickR"><i></i></div>
+<script type="module" src="/src/main.js"></script>
+</body>
+</html>
