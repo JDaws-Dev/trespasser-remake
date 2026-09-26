@@ -6,6 +6,15 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black">
 <title>Trespasser</title>
+<!-- The front end's first screens, fetched ahead of the level's hundreds of files so a
+     fresh visit shows them at once rather than after the queue. -->
+<link rel="preload" href="menu/layouts.json" as="fetch" crossorigin>
+<link rel="preload" href="menu/splash.png" as="image" fetchpriority="high">
+<link rel="preload" href="menu/ms_bkgnd.png" as="image" fetchpriority="high">
+<link rel="preload" href="menu/ms_new_0.png" as="image">
+<link rel="preload" href="menu/ms_load_0.png" as="image">
+<link rel="preload" href="menu/ms_options_0.png" as="image">
+<link rel="preload" href="menu/ms_credits_0.png" as="image">
 <style>
   html, body { margin: 0; height: 100%; background: #000; overflow: hidden; touch-action: none; -webkit-user-select: none; user-select: none; }
   canvas { display: block; width: 100vw; height: 100vh; }

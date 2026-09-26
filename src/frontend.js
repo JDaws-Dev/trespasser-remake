@@ -761,6 +761,7 @@ class FrontEnd {
       : `Also: ${['turnLeft', 'turnRight', 'reach', 'drop'].map((a) => `${keyNames(byAction[a]?.codes)} ${byAction[a]?.label.toLowerCase()}`).join(' · ')}`;
     win.text(900, idle);
     at(248, 144).textContent = '';   // the second line of "Replay voice over"
+    win.text(100, 'More');   // Gore: IDS_GORE_1, the original's default
     for (const [id, action, lx, ly] of rows) {
       const k = byAction[action];
       if (!k) continue;
