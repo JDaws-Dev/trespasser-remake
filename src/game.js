@@ -398,7 +398,8 @@ export class Game {
         this.pressSeen = hand.press.time;
         this.pressT = 0;
       }
-      if (this.pressT != null) this.pressT += dt;
+      // Held down (the as2 lift buttons), the finger stays on it until let go.
+      if (this.pressT != null) this.pressT = hand?.press?.held ? Math.min(this.pressT + dt, PRESS_OUT * 0.99) : this.pressT + dt;
       if (this.pressT > PRESS_OUT + PRESS_BACK) this.pressT = null;
       if (hand && (hand.stowed || hand.mode === 'stow')) {
         reach = { stow: true };
