@@ -82,6 +82,16 @@ class Textures:
                         b = (v & 31) * 255 // 31
                         a = 255
                 out[dst + x * 4: dst + x * 4 + 4] = bytes((r, g, b, a))
+        # Transparent pixels carry the palette's key colour (often magenta), which
+        # texture filtering would blend into the edges. Give them the average visible
+        # colour instead.
+        opaque = [i for i in range(0, len(out), 4) if out[i + 3]]
+        if opaque and len(opaque) * 4 < len(out):
+            n = len(opaque)
+            avg = bytes(sum(out[i + c] for i in opaque) // n for c in range(3))
+            for i in range(0, len(out), 4):
+                if not out[i + 3]:
+                    out[i:i + 3] = avg
         return bytes(out)
 
 def write_png(path, w, h, rgba):
@@ -225,7 +235,7 @@ def convert(level):
     for tid, name in used_tex.items():
         e = tx.entries[tid]
         path = os.path.join(out, 'tex', '%08x.png' % tid)
-        if not os.path.exists(path):
+        if True:
             write_png(path, e['w'], e['h'], tx.rgba(e))
     open(os.path.join(out, 'meshes.bin'), 'wb').write(blob)
 

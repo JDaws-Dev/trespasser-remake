@@ -4,9 +4,12 @@
 import * as THREE from 'three';
 
 const textureLoader = new THREE.TextureLoader();
+const pending = [];
 
 function loadTexture(url) {
-  const tex = textureLoader.load(url);
+  let done;
+  pending.push(new Promise((resolve) => (done = resolve)));
+  const tex = textureLoader.load(url, done, undefined, done);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
   tex.anisotropy = 4;
@@ -73,9 +76,36 @@ export async function loadLevel(base, onProgress = () => {}) {
   }
 
   const m4 = new THREE.Matrix4();
+  const matrixOf = (inst) => {
+    const r = inst.rot, s = inst.scale, p = inst.pos;
+    return new THREE.Matrix4().set(r[0][0] * s, r[0][1] * s, r[0][2] * s, p[0],
+                                   r[1][0] * s, r[1][1] * s, r[1][2] * s, p[1],
+                                   r[2][0] * s, r[2][1] * s, r[2][2] * s, p[2],
+                                   0, 0, 0, 1);
+  };
+
+  // Terrain objects are not drawn as geometry: they paint the terrain's texture.
+  const decals = [];
   for (const [key, list] of byModel) {
+    if (list[0].cls !== 'CTerrainObj') continue;
+    for (const inst of list)
+      for (const { geo, mat } of partGeoms.get(key) || [])
+        decals.push({ geometry: geo, material: mat, matrix: matrixOf(inst), layer: inst.props.Height || 0 });
+    byModel.delete(key);
+  }
+
+  // Water surfaces: translucent, lit only a little, drawn after solid geometry.
+  const waterMat = new THREE.MeshLambertMaterial({
+    color: 0x2e6f78, transparent: true, opacity: 0.72, depthWrite: false, side: THREE.DoubleSide,
+  });
+  let seaLevel = null, seaScale = 0;
+  for (const [key, list] of byModel) {
+    const isWater = list[0].cls === 'CEntityWater';
+    // The sea is the largest water surface; ponds sit higher inland.
+    if (isWater) for (const inst of list) if (inst.scale > seaScale) { seaScale = inst.scale; seaLevel = inst.pos[2]; }
     for (const { geo, mat } of partGeoms.get(key) || []) {
-      const mesh = new THREE.InstancedMesh(geo, mat, list.length);
+      const mesh = new THREE.InstancedMesh(geo, isWater ? waterMat : mat, list.length);
+      if (isWater) mesh.renderOrder = 10;
       list.forEach((inst, i) => {
         const r = inst.rot, s = inst.scale, p = inst.pos;
         m4.set(r[0][0] * s, r[0][1] * s, r[0][2] * s, p[0],
@@ -115,5 +145,6 @@ export async function loadLevel(base, onProgress = () => {}) {
     group.add(terrain);
   }
 
-  return { group, info, terrain };
+  await Promise.all(pending);
+  return { group, info, terrain, decals, seaLevel, partGeoms };
 }

@@ -4,6 +4,8 @@
 import * as THREE from 'three';
 import { loadLevel } from './level.js';
 import { Input } from './input.js';
+import { paintTerrain } from './terrainPaint.js';
+import { buildCollider, moveCapsule } from './collision.js';
 
 const LEVEL = new URLSearchParams(location.search).get('level') || 'be';
 const EYE_HEIGHT = 1.6;       // metres
@@ -34,9 +36,9 @@ scene.add(sun);
 // The sea: a flat plane at sea level stretching past the fog.
 const sea = new THREE.Mesh(
   new THREE.PlaneGeometry(20000, 20000),
-  new THREE.MeshLambertMaterial({ color: 0x2f5f68, transparent: true, opacity: 0.92 }),
+  new THREE.MeshLambertMaterial({ color: 0x2e6f78, transparent: true, opacity: 0.72, depthWrite: false }),
 );
-sea.position.z = 0.2;
+sea.renderOrder = 9;
 world.add(sea);
 
 const camera = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.05, 2000);
@@ -51,8 +53,17 @@ addEventListener('resize', () => {
 const loading = document.getElementById('loading');
 const hud = document.getElementById('hud');
 
-const { group, info, terrain } = await loadLevel(`levels/${LEVEL}`, (s) => (loading.textContent = s));
+const { group, info, terrain, decals, seaLevel, partGeoms } = await loadLevel(`levels/${LEVEL}`, (s) => (loading.textContent = s));
 world.add(group);
+// The open sea reaches the horizon at the level of the largest water surface.
+sea.position.z = (seaLevel ?? 0) - 0.05;
+if (terrain) {
+  loading.textContent = 'Painting the terrain…';
+  world.add(paintTerrain(renderer, terrain, decals));
+  terrain.visible = false;   // still used for ground height
+}
+loading.textContent = 'Building collision…';
+const collider = buildCollider(terrain, info, partGeoms);
 loading.remove();
 
 // Player state, in game coordinates (x east, y north, z up).
@@ -71,11 +82,14 @@ function groundAt(x, y) {
   if (!terrain) return 0;
   probe.set(x, y, 1000).applyMatrix4(world.matrixWorld);
   ray.set(probe, down);
+  terrain.visible = true;
   const hit = ray.intersectObject(terrain, false)[0];
+  terrain.visible = false;
   if (!hit) return 0;
   return world.worldToLocal(hit.point.clone()).z;
 }
 
+window.__player = player;   // for automated tests
 const input = new Input(renderer.domElement);
 hud.textContent = input.touch ? 'Left stick to walk · right stick to look' : 'Click to look around · WASD to walk · Shift to run · Space to jump';
 setTimeout(() => (hud.textContent = ''), 6000);
@@ -94,16 +108,17 @@ renderer.setAnimationLoop(() => {
   // Walk relative to where Anne faces (yaw 0 looks along +Y).
   const speed = move.run ? RUN : WALK;
   const fx = -Math.sin(player.yaw), fy = Math.cos(player.yaw);
-  player.pos.x += (fx * move.forward + fy * move.strafe) * speed * dt;
-  player.pos.y += (fy * move.forward - fx * move.strafe) * speed * dt;
-
-  const ground = Math.max(groundAt(player.pos.x, player.pos.y), 0.2 - 1.2);
   player.vz -= GRAVITY * dt;
-  player.pos.z += player.vz * dt;
-  if (player.pos.z <= ground) {
-    player.pos.z = ground;
-    player.vz = move.jump ? 4.2 : 0;
-  }
+  const delta = new THREE.Vector3(
+    (fx * move.forward + fy * move.strafe) * speed * dt,
+    (fy * move.forward - fx * move.strafe) * speed * dt,
+    player.vz * dt,
+  );
+  // Short steps are taken whole; the capsule resolves against scenery and terrain.
+  const { onGround } = moveCapsule(collider, player.pos, delta);
+  if (onGround) player.vz = move.jump ? 4.2 : Math.max(player.vz, 0) * 0;
+  // Safety net: never fall through the world.
+  if (player.pos.z < -50) player.pos.z = groundAt(player.pos.x, player.pos.y) + 1;
 
   // Camera: game-space eye position and orientation, mapped through the world root.
   eye.set(player.pos.x, player.pos.y, player.pos.z + EYE_HEIGHT).applyMatrix4(world.matrixWorld);
