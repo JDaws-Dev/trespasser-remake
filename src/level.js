@@ -23,6 +23,52 @@ export function textureUrl(base, id) {
   return hd[id] ? `${base}/hd/${id}.png` : `${base}/tex/${id}.png`;
 }
 
+// Trespasser shipped no keyframe animation (its dinosaurs were physics-driven), so
+// the remake walks them procedurally in the vertex shader: legs swing about the
+// hips in alternation, the tail sways, the head bobs. Per-instance attributes:
+// aGait (0 still .. 1 walking), aPhase, aSpeed (steps per second-ish).
+export const gaitUniforms = { uTime: { value: 0 } };
+
+function gaitMaterial(base, bounds) {
+  const mat = base.clone();
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uTime = gaitUniforms.uTime;
+    shader.uniforms.uMin = { value: bounds.min.clone() };
+    shader.uniforms.uMax = { value: bounds.max.clone() };
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', `#include <common>
+        uniform float uTime; uniform vec3 uMin; uniform vec3 uMax;
+        attribute float aGait; attribute float aPhase; attribute float aSpeed;`)
+      .replace('#include <begin_vertex>', `
+        vec3 p = position;
+        {
+          float gait = aGait;
+          float ph = uTime * aSpeed + aPhase;
+          vec3 ext = uMax - uMin;
+          float ny = (p.y - uMin.y) / ext.y;   // 0 tail tip .. 1 nose
+          float nz = (p.z - uMin.z) / ext.z;   // 0 feet .. 1 top
+          // Legs: the lower half under the hips, left and right out of phase.
+          if (nz < 0.5 && ny > 0.3 && ny < 0.7) {
+            float side = p.x < 0.0 ? 0.0 : 3.14159;
+            float w = 1.0 - nz / 0.5;
+            float ang = sin(ph + side) * 0.6 * gait * w;
+            vec2 hip = vec2(uMin.y + 0.5 * ext.y, uMin.z + 0.5 * ext.z);
+            vec2 rel = p.yz - hip;
+            float c = cos(ang), s = sin(ang);
+            p.yz = hip + vec2(c * rel.x - s * rel.y, s * rel.x + c * rel.y);
+          }
+          // Tail sways side to side, more towards the tip.
+          if (ny < 0.35) { float tt = (0.35 - ny) / 0.35; p.x += sin(ph * 0.5 + tt * 2.0) * 0.08 * ext.y * tt * (0.35 + 0.65 * gait); }
+          // Head bobs with each step.
+          if (ny > 0.7) { float tt = (ny - 0.7) / 0.3; p.z += sin(ph * 2.0) * 0.03 * ext.z * tt * gait; }
+          // The whole body rises a little at each step.
+          p.z += abs(sin(ph)) * 0.02 * ext.z * gait;
+        }
+        vec3 transformed = p;`);
+  };
+  return mat;
+}
+
 export async function loadLevel(base, onProgress = () => {}) {
   const [info, meshes, terrainBytes, hdList] = await Promise.all([
     fetch(`${base}/level.json`).then((r) => r.json()),
@@ -110,12 +156,32 @@ export async function loadLevel(base, onProgress = () => {}) {
     color: 0x2e6f78, transparent: true, opacity: 0.72, depthWrite: false, side: THREE.DoubleSide,
   });
   let seaLevel = null, seaScale = 0;
+  const animalMaterials = new Map();
   for (const [key, list] of byModel) {
     const isWater = list[0].cls === 'CEntityWater';
+    const isAnimal = list[0].cls === 'CAnimal';
+    // Model-space bounds of the whole animal, for the gait shader.
+    let bounds = null;
+    if (isAnimal) {
+      bounds = new THREE.Box3();
+      for (const { geo } of partGeoms.get(key) || []) { geo.computeBoundingBox(); bounds.union(geo.boundingBox); }
+    }
     // The sea is the largest water surface; ponds sit higher inland.
     if (isWater) for (const inst of list) if (inst.scale > seaScale) { seaScale = inst.scale; seaLevel = inst.pos[2]; }
     for (const { geo, mat } of partGeoms.get(key) || []) {
-      const mesh = new THREE.InstancedMesh(geo, isWater ? waterMat : mat, list.length);
+      let material = isWater ? waterMat : mat;
+      if (isAnimal) {
+        // Animals get their own copy of the material with the gait shader in it.
+        if (!animalMaterials.has(mat)) animalMaterials.set(mat, gaitMaterial(mat, bounds));
+        material = animalMaterials.get(mat);
+      }
+      const mesh = new THREE.InstancedMesh(geo, material, list.length);
+      if (isAnimal) {
+        mesh.geometry = geo.clone();
+        mesh.geometry.setAttribute('aGait', new THREE.InstancedBufferAttribute(new Float32Array(list.length), 1));
+        mesh.geometry.setAttribute('aPhase', new THREE.InstancedBufferAttribute(new Float32Array(list.map(() => Math.random() * 6.28)), 1));
+        mesh.geometry.setAttribute('aSpeed', new THREE.InstancedBufferAttribute(new Float32Array(list.map((i) => (/raptor/i.test(i.name) ? 9 : 2.2))), 1));
+      }
       if (isWater) mesh.renderOrder = 10;
       list.forEach((inst, i) => {
         (refs[inst.index] ||= []).push({ mesh, i });

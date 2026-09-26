@@ -206,9 +206,14 @@ export class Game {
       d.callT -= dt;
       if (d.callT <= 0 && dist < 250) { d.callT = 12 + Math.random() * 25; this.audio?.vocal(d.vocal, d.raptor ? (d.awake ? 'Snarl' : 'Call') : 'Call', d.pos, 0.8); }
       d.pos.z = this.groundAt(d.pos.x, d.pos.y);
-      // A little gait: bob while moving.
-      const bob = d.raptor && d.awake ? new THREE.Matrix4().makeRotationX(Math.sin(now / 90) * 0.05) : null;
-      this.setInstanceMatrix(d.index, this.matrixFor(d.inst, d.pos, d.yaw, bob));
+      this.setInstanceMatrix(d.index, this.matrixFor(d.inst, d.pos, d.yaw));
+      // Gait amount for the walk shader: eases in as the animal moves.
+      const moving = d.raptor ? (d.awake && dist > RAPTOR_BITE) : true;
+      d.gait = THREE.MathUtils.lerp(d.gait || 0, moving ? 1 : 0, Math.min(1, dt * 4));
+      for (const { mesh, i } of this.refs[d.index] || []) {
+        const a = mesh.geometry.getAttribute('aGait');
+        if (a) { a.setX(i, d.gait); a.needsUpdate = true; }
+      }
     }
 
     const alive = this.dinos.filter((d) => d.alive && d.raptor).length;

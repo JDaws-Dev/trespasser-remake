@@ -2,7 +2,7 @@
 // (converted by tools/convert_level.py) rendered with three.js, playable with
 // keyboard and mouse or with touch sticks on a phone.
 import * as THREE from 'three';
-import { loadLevel, textureUrl } from './level.js';
+import { loadLevel, textureUrl, gaitUniforms } from './level.js';
 import { Input } from './input.js';
 import { paintTerrain } from './terrainPaint.js';
 import { buildCollider, moveCapsule } from './collision.js';
@@ -130,6 +130,7 @@ const lookEuler = new THREE.Euler(0, 0, 0, 'ZXY');
 renderer.setAnimationLoop(() => {
   const dt = Math.min(clock.getDelta(), 0.05);
   const move = input.poll(dt);
+  gaitUniforms.uTime.value = clock.elapsedTime;
   game.update(dt, player, move);
 
   player.yaw -= move.look.x;
