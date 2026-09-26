@@ -14,16 +14,21 @@ A gun is held by two magnets: the hand-pickup magnet ('HandPickup', 'Substitute'
 is where her palm grips it, and the shoulder-hold magnet ('ShoulderHold') gives the
 gun's orientation relative to her head (Player.cpp SetHandRotate, v3Sight).
 
-The chest's health tattoo is an animated texture: Anne's Anim00..Anim10 frames on
-surface AnimSubMaterial - 1, frame = (frames - 1) * (1 - health) (Player.cpp Process).
+Only her arms and hands are exported (the owner's rule, kid-appropriate): her chest,
+shirt and the original chest health tattoo (Anim00..Anim10 on AnimSubMaterial) are left
+out, their textures are never written, and health stays on the HUD. The left arm is a
+stub fixed to the torso, so it goes too. The torso's points stay (the skeleton needs
+every point) but no triangle uses them.
 
 Everything is written in Anne's own frame (metres; x right, y forward, z up; origin
 at her pelvis joint), with a separate position/normal/uv per triangle corner and a
 point index per corner so the viewer can pose the points and rebuild the corners.
 """
-import json, math, os, struct, sys
+import json, math, os, re, struct, sys
 from groff import Groff, read_value_table, properties
 from convert_level import DATA, OUT, Textures, read_raw_mesh, read_material, euler_matrix, write_png
+
+TORSO = re.compile(r'chest|shirt|health|leftarm', re.I)
 
 def load(level):
     for name in (f'{level}.GRF', f'{level}.grf'):
@@ -137,6 +142,8 @@ def export(level):
     parts = []
     for surf, tris in sorted(mesh['groups'].items()):
         name = mat[surf][0] if surf < len(mat) else ''
+        if TORSO.search(name) or (ap.get('AnimSubMaterial') and surf >= ap['AnimSubMaterial'] - 1):
+            continue
         pos_, nrm, uv, idx = [], [], [], []
         for tri in tris:
             for vi in tri:
@@ -158,16 +165,7 @@ def export(level):
     blob += struct.pack('<%dB' % npts, *link)
     blob += b'\0' * (-len(blob) % 4)
 
-    # Health tattoo frames, on the chest surface they animate.
-    health = None
-    if 'AnimSubMaterial' in ap:
-        frames, k = [], 0
-        while 'Anim%02d' % k in ap:
-            f = ap['Anim%02d' % k]
-            frames.append(texture('Map\\%s\\%s' % (level, f)) or texture(next(
-                (m[0] for m in mat if os.path.basename(m[0].replace('\\', '/')).lower() == f.lower()), f)))
-            k += 1
-        health = dict(surface=ap['AnimSubMaterial'] - 1, frames=frames)
+    health = None   # the chest tattoo is not exported (see the top of this file)
 
     # Grip and hold magnets, per held object (by name without the -NN suffix).
     def stem(n):

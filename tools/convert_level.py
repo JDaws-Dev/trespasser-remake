@@ -385,6 +385,19 @@ def convert(level):
         open(os.path.join(out, 'terrain.bin'), 'wb').write(tb)
         terrain_info = dict(vertices=len(pos), triangles=len(tris))
         print(f'  terrain: {len(pos)} vertices, {len(tris)} triangles')
+        # The engine keeps each level's prototypes (the "-00" ideal of every gun, crate,
+        # rock and animal that copies are instanced from; Lib/Loader/PlatonicInstance) in
+        # a pile off the edge of the terrain, where the original never lets you see them.
+        # Here the sea runs out to the horizon under them, so anything beyond the terrain
+        # is dropped, except what is meant to be seen from afar: the sky, the backdrop,
+        # water and the far-sea sheets (scrolling, so they carry DeltaX).
+        x0, x1 = min(p[0] for p in pos) - 20, max(p[0] for p in pos) + 20
+        y0, y1 = min(p[1] for p in pos) - 20, max(p[1] for p in pos) + 20
+        before = len(instances)
+        instances = [i for i in instances if x0 <= i['pos'][0] <= x1 and y0 <= i['pos'][1] <= y1
+                     or i['cls'] in ('CSky', 'CBackdrop', 'CEntityWater')
+                     or 'DeltaX' in i['props']]
+        print(f'  {before - len(instances)} prototypes off the terrain dropped')
 
     # The sea, drawn out to the horizon, named per level (the seabed runs on under the
     # water, so no terrain test can tell it from an inland lake). Where the level has no

@@ -1,13 +1,15 @@
 // Anne's own body in first person, from the level's 'Anne' object (tools/export_anne.py):
-// her chest (with the health tattoo) and her right arm, which reaches out and grips
-// whatever she holds.
+// her right arm and hand (never her torso), which reaches out and grips whatever she
+// holds.
 //
 // The original drove the arm with physics; here it is posed each frame the way the
 // engine settled it (Player.cpp): a gun is turned so its shoulder-hold magnet lines up
 // with the view (hand request space), the sight point on its barrel line sits on the
 // line of sight, and her palm grips it at its hand-pickup magnet, the arm reaching
 // out from the shoulder. The hand shape is the magnet's substitute mesh. With nothing
-// held the arm hangs at her side, out of view unless she looks down.
+// held the arm hangs at her side, out of view unless she looks down. In arm mode the
+// player moves the hand (palm target and wrist rotation from physics.hand) and the
+// elbow follows; stowing lowers the arm and the gun with it.
 //
 // Everything here is in Anne's body frame (metres; x right, y forward, z up), under a
 // group that the camera carries. It is drawn in front of the world (its depth squeezed
@@ -18,7 +20,9 @@ import { textureUrl } from './level.js';
 const DEPTH_SQUEEZE = 0.02;   // fraction of the depth range the arm is drawn in
 const ARM_REACH = 0.97;       // fraction of full arm length the wrist is held out at
 const AIM_PITCH_MIN = -0.9, AIM_PITCH_MAX = 1.1;   // hand angle limits relative to the body (radians)
-const RAISE_RATE = 3.5;       // arm raises in about 1 / RAISE_RATE seconds
+const RAISE_RATE = 3.5;
+const EYE_HEIGHT = 1.6;
+const SHADOW_LEVEL = 0.45;    // arm brightness in shade (sky and bounce light only)       // main.js: the camera above the player's feet       // arm raises in about 1 / RAISE_RATE seconds
 
 // Drawn over the world: clip-space depth pulled towards the near plane, order kept.
 function frontLayer(material) {
@@ -69,9 +73,7 @@ export class Anne {
     this.posed = new Float32Array(n * 3);
     this.substitute = -1;
 
-    // One geometry, a group per surface. The health tattoo's other frames are stub
-    // triangles that only exist to load their textures: they are left out, and the
-    // tattoo surface swaps its texture instead.
+    // One geometry, a group per surface.
     const health = data.health;
     // Modesty (owner's rule): her torso is never drawn — no chest, shirt or chest
     // tattoo, only the arms and hands. Health stays on the HUD.
@@ -100,11 +102,6 @@ export class Anne {
       const mat = new THREE.MeshStandardMaterial({ roughness: 0.85, metalness: 0, side: THREE.DoubleSide });
       if (p.texture) mat.map = tex(p.texture);
       else if (p.colour) mat.color.setRGB(p.colour[0] / 255, p.colour[1] / 255, p.colour[2] / 255);
-      if (health && p.surface === health.surface) {
-        this.tattoo = mat;
-        this.tattooFrames = health.frames.map((id) => (id ? tex(id) : null));
-        this.tattooFrame = 0;
-      }
       geo.addGroup(at, c, materials.length);
       materials.push(frontLayer(mat));
       at += c;
@@ -152,6 +149,70 @@ export class Anne {
     return g && g.grip && g.hold ? g : null;
   }
 
+  // A grip for a gun that has no magnets in the level (Jungle Road's Barrett, Browning
+  // and .45): made from its model bounds (model units, scaled by `scale`), assuming the
+  // barrel runs along +Y and the top is +Z as on every gun that does have magnets. The
+  // palm takes the pistol grip a third of the way from the back, below the middle; the
+  // sight (hold) runs along the top, 0.7 m (rifles) or 0.9 m (pistols) behind the grip.
+  genericGrip(box, scale) {
+    const min = box.min.clone().multiplyScalar(scale), max = box.max.clone().multiplyScalar(scale);
+    const size = max.clone().sub(min), cx = (min.x + max.x) / 2;
+    const pistol = size.y < 0.45;
+    const gy = min.y + size.y * (pistol ? 0.3 : 0.35);
+    return {
+      grip: { pos: [cx, gy, min.z + size.z * (pistol ? 0.3 : 0.35)], rot: [[0, 0, 1], [0, 1, 0], [-1, 0, 0]],
+              substitute: this.poseIndex(pistol ? 'Anne_Gun1' : 'Anne_Barrett') },
+      hold: { pos: [cx, gy - (pistol ? 0.9 : 0.7), max.z], rot: [[1, 0, 0], [0, 1, 0], [0, 0, 1]] },
+    };
+  }
+
+  // Shade: the arm is drawn outside the shadow maps, so test the sun from the hand and
+  // darken it when scenery is in the way (towards the sky and ground light alone).
+  updateShade(dt, collider, world, scene) {
+    this.shadeT = (this.shadeT || 0) - dt;
+    if (this.shadeT <= 0 && collider?.boundsTree) {
+      this.shadeT = 0.15;
+      const sun = scene.getObjectsByProperty('isDirectionalLight', true)[0];
+      if (sun) {
+        const to = sun.position.clone().sub(sun.target.position).normalize();          // three.js world
+        const dir = to.applyQuaternion(world.quaternion.clone().invert());               // game space
+        const hand = new THREE.Vector3().setFromMatrixPosition(this.pose[12]);
+        this.body.updateWorldMatrix(true, false);
+        const p = world.worldToLocal(this.body.localToWorld(hand));
+        const hit = collider.boundsTree.raycastFirst(new THREE.Ray(p.addScaledVector(dir, 0.05), dir), THREE.DoubleSide, 0, 300);
+        this.shadeWant = hit ? SHADOW_LEVEL : 1;
+      }
+    }
+    const want = this.shadeWant ?? 1;
+    this.shade = THREE.MathUtils.lerp(this.shade ?? 1, want, Math.min(1, dt * 5));
+    const tint = (m) => {
+      if (!m?.color) return;
+      m.userData.baseColor ??= m.color.clone();
+      m.color.copy(m.userData.baseColor).multiplyScalar(this.shade);
+    };
+    this.mesh.material.forEach(tint);
+    this.held.traverse((o) => tint(o.material));
+  }
+
+  // A hand shape by name (Anne_Natural, Anne_Rock ...); 0 is her own open hand.
+  poseIndex(name) {
+    return Math.max(0, this.data.poses.findIndex((p) => p.name === name));
+  }
+
+  // Where her palm goes on an object she carries (game space): its hand-pickup magnet
+  // if it has one, else on top of it with the fingers pointing away from her.
+  reachFor(name, objMatrix, radius) {
+    const pos = new THREE.Vector3(), q = new THREE.Quaternion(), sc = new THREE.Vector3();
+    objMatrix.decompose(pos, q, sc);
+    const g = this.data.grips[name.replace(/-\d+$/, '')]?.grip;
+    if (g) {
+      const obj = new THREE.Matrix4().makeRotationFromQuaternion(q).setPosition(pos);
+      const m = obj.multiply(mat3ToMatrix4(g.rot, g.pos));
+      return { palm: new THREE.Vector3().setFromMatrixPosition(m), rot: m.setPosition(0, 0, 0), sub: g.substitute || this.poseIndex('Anne_Rock') };
+    }
+    return { palm: pos.add(new THREE.Vector3(0, 0, Math.min(radius, 0.4) * 0.6)), rot: null, sub: this.poseIndex('Anne_Rock') };
+  }
+
   setSubstitute(i) {
     if (i === this.substitute) return;
     this.substitute = i;
@@ -160,20 +221,13 @@ export class Anne {
     if (pose) for (const [k, p] of Object.entries(pose.points)) this.points.set(p, k * 3);
   }
 
-  setHealth(fraction) {
-    if (!this.tattoo) return;
-    const n = this.tattooFrames.length;
-    // Player.cpp: the last frame only at zero.
-    const f = THREE.MathUtils.clamp(Math.floor((n - 1) * (1 - fraction)), 0, n - 1);
-    if (f !== this.tattooFrame && this.tattooFrames[f]) {
-      this.tattooFrame = f;
-      this.tattoo.map = this.tattooFrames[f];
-      this.tattoo.needsUpdate = true;
-    }
-  }
-
-  // dt: seconds since the last frame. pitch: the view's pitch (radians, up positive). holding: { grip, hold, scale } or null.
-  update(dt, pitch, holding, recoil = 0) {
+  // dt: seconds since the last frame. player: { pos, yaw, pitch } (game space; the eye is
+  // EYE_HEIGHT above pos). holding: a gun's magnets { grip, hold, scale }, or null.
+  // reach: where the player puts her hand, overriding the gun-sighting pose:
+  // { palm (game-space Vector3), viewRot (Quaternion in her view frame) or rot (game-space
+  // Matrix4/Quaternion) or neither, stow (true: arm down, gun out of view) }, or null.
+  update(dt, player, holding, recoil = 0, reach = null) {
+    const pitch = player.pitch;
     // Eye in the body frame: the head turns about the neck.
     const eyeRot = new THREE.Matrix4().makeRotationX(pitch);
     const eye = this.head.clone().sub(this.neck).applyMatrix4(eyeRot).add(this.neck);
@@ -185,10 +239,37 @@ export class Anne {
     // Hanging at her side, hand turned in.
     let wrist = this.shoulder.clone().add(new THREE.Vector3(0.06, 0.1, -(this.upperLen + this.foreLen) * 0.98));
     let handRot = new THREE.Matrix4().makeRotationX(-Math.PI / 2 - 0.1).premultiply(new THREE.Matrix4().makeRotationZ(-Math.PI / 2));
-    // She raises the arm when she takes something, and lowers it when she lets go.
-    this.raise = THREE.MathUtils.clamp((this.raise || 0) + (holding ? dt : -dt) * RAISE_RATE, 0, 1);
+    // She raises the arm when she takes something or reaches out, and lowers it when she
+    // lets go or stows what she holds.
+    const stowed = !!(reach && reach.stow);
+    const up = !stowed && (holding || (reach && reach.palm));
+    this.raise = THREE.MathUtils.clamp((this.raise || 0) + (up ? dt : -dt) * RAISE_RATE, 0, 1);
     const handToGun = new THREE.Matrix4();
     if (holding) {
+      // The gun relative to the hand: its grip in the palm.
+      const gripRot = mat3ToMatrix4(holding.grip.rot);
+      const wristG = new THREE.Vector3(...holding.grip.pos).sub(this.wristToPalm.clone().applyMatrix4(gripRot));
+      handToGun.copy(gripRot).setPosition(wristG).invert().scale(tmpV.setScalar(holding.scale));
+    }
+    if (stowed) {
+      // Stowed: the arm goes down and stays there (keeping whatever pose it had to ease from).
+    } else if (reach && reach.palm) {
+      // The hand goes where the player puts it: palm at a game-space point, wrist turned by
+      // a rotation in her view frame (x right, y ahead, z up of the view), or given in game
+      // space, or by default fingers pointing away from her, palm down.
+      const unYaw = new THREE.Matrix4().makeRotationZ(-player.yaw);
+      const palm = reach.palm.clone().sub(tmpV.set(player.pos.x, player.pos.y, player.pos.z + EYE_HEIGHT)).applyMatrix4(unYaw).add(eye);
+      let rot;
+      if (reach.viewRot) {
+        rot = new THREE.Matrix4().makeRotationFromQuaternion(reach.viewRot).premultiply(eyeRot);
+      } else if (reach.rot) {
+        rot = reach.rot.isQuaternion ? new THREE.Matrix4().makeRotationFromQuaternion(reach.rot) : new THREE.Matrix4().extractRotation(reach.rot);
+        rot.premultiply(unYaw);
+      } else {
+        rot = boneBasis(palm.clone().sub(this.shoulder), new THREE.Vector3(0, 0, 1));
+      }
+      this.lastAim = { wrist: palm.sub(this.wristToPalm.clone().applyMatrix4(rot)), rot };
+    } else if (holding) {
       const { grip, hold } = holding;
       // Hand request space: the view direction, within the arm's limits, kicked up by recoil.
       const aim = THREE.MathUtils.clamp(pitch, AIM_PITCH_MIN, AIM_PITCH_MAX) + recoil * 0.22;
@@ -206,22 +287,20 @@ export class Anne {
       // |eye + c - shoulder + t f| = reach.
       const f = new THREE.Vector3(0, 1, 0).applyMatrix4(req);
       const e = eye.clone().add(c).sub(this.shoulder);
-      const reach = (this.upperLen + this.foreLen) * ARM_REACH;
-      const b = e.dot(f), cc = e.lengthSq() - reach * reach;
+      const len = (this.upperLen + this.foreLen) * ARM_REACH;
+      const b = e.dot(f), cc = e.lengthSq() - len * len;
       const t = -b + Math.sqrt(Math.max(0, b * b - cc)) - recoil * 0.07;
-      const aimWrist = eye.clone().addScaledVector(f, t).add(c);
-      // The gun relative to the hand: its grip in the palm.
-      handToGun.copy(gripRot).setPosition(wristG).invert().scale(tmpV.setScalar(holding.scale));
-      this.lastAim = { wrist: aimWrist, rot: aimRot };
+      this.lastAim = { wrist: eye.clone().addScaledVector(f, t).add(c), rot: aimRot };
     }
     if (this.lastAim && this.raise > 0) {
-      // Ease between hanging and aiming (lowering again after letting go).
+      // Ease between hanging and the raised pose (lowering again after letting go).
       const k = this.raise * this.raise * (3 - 2 * this.raise);
       wrist.lerp(this.lastAim.wrist, k);
       handRot = new THREE.Matrix4().makeRotationFromQuaternion(
         new THREE.Quaternion().setFromRotationMatrix(handRot).slerp(tmpQ.setFromRotationMatrix(this.lastAim.rot), k));
     }
-    this.held.visible = !!holding;
+    // A stowed gun goes out of view once the arm is down.
+    this.held.visible = !!holding && !(stowed && this.raise < 0.25);
 
     // Two-bone reach: the elbow bends out to the right and down.
     const S = this.shoulder;

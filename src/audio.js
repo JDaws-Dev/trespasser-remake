@@ -64,6 +64,40 @@ export class Audio {
     return src;
   }
 
+  // A sound effect with the original's transfer applied: `gain` linear, `rate` the
+  // pitch multiplier, `refDistance` from the collision's dB-per-metre roll-off. The
+  // pack's per-sample master volume is in dB. Returns { src, gain, pan } (or null)
+  // so looping scrapes can be moved and faded.
+  async playFx(name, { pos = null, gain = 1, rate = 1, refDistance = 4, loop = false } = {}) {
+    if (!this.ctx || this.ctx.state !== 'running') return null;
+    const buf = await this.buffer(name);
+    if (!buf) return null;
+    const src = this.ctx.createBufferSource();
+    src.buffer = buf;
+    src.loop = loop;
+    src.playbackRate.value = rate;
+    const g = this.ctx.createGain();
+    g.gain.value = gain * Math.pow(10, (this.index.samples[name]?.volume || 0) / 20);
+    src.connect(g);
+    let pan = null;
+    if (pos) {
+      pan = this.ctx.createPanner();
+      pan.panningModel = 'HRTF';
+      pan.distanceModel = 'inverse';
+      pan.refDistance = refDistance;
+      pan.maxDistance = 400;
+      pan.rolloffFactor = 1;
+      const w = this.toListenerSpace(pos);
+      pan.positionX.value = w.x; pan.positionY.value = w.y; pan.positionZ.value = w.z;
+      g.connect(pan);
+      pan.connect(this.master);
+    } else {
+      g.connect(this.master);
+    }
+    src.start();
+    return { src, gain: g, pan, duration: buf.duration / rate };
+  }
+
   // One of a dinosaur's vocal variants ("Raptor", "Attack"), at its position.
   vocal(dino, action, pos, volume = 1) {
     const names = this.index.vocals[dino]?.[action];
