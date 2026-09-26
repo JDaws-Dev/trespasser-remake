@@ -410,13 +410,12 @@ export class Game {
         if (this.pressT < PRESS_OUT) {
           // Finger first: the fingertip is about 0.12 m past the palm.
           const { point, normal } = hand.press;
-          // The hand turned on its side, back of the hand to her left and the palm towards
-          // her right, so from her eye the pointing finger shows its side and pad rather
-          // than the back of the hand.
+          // The hand turned on its side, thumb up, so from her eye the pointing finger shows
+          // in profile rather than hidden behind the back of the hand.
           const side = new THREE.Vector3(0, 0, 1).cross(normal).normalize();   // her right, facing the surface
           // The finger comes in from her right, angled across the view, so its length shows.
           const finger = normal.clone().negate().addScaledVector(side, -0.55).normalize();
-          reach = { palm: point.clone().addScaledVector(finger, -0.12), rot: Anne.surfaceRot(finger, side.multiplyScalar(-0.85).add(new THREE.Vector3(0, 0, 0.35))), fast: true };
+          reach = { palm: point.clone().addScaledVector(finger, -0.12), rot: Anne.surfaceRot(finger, side.multiplyScalar(0.85).add(new THREE.Vector3(0, 0, 0.35))), fast: true };
         }
         a.setSubstitute(a.poseIndex('Anne_ButtonFinger'));
       } else if (hand && hand.mode === 'arm' && ph.handStyle !== 'modern') {
