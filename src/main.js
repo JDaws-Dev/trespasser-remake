@@ -86,11 +86,13 @@ if (terrain) {
   terrain.visible = false;   // still used for ground height
 }
 for (const m of lit) atmosphere.setupMaterial(m);
-loading.textContent = 'Building collision…';
-const collider = buildCollider(terrain, info, partGeoms);   // for the game's line-of-fire tests
 loading.textContent = 'Building physics…';
 const physics = await createPhysics({ info, terrain, partGeoms, refs, level: LEVEL,
   onProgress: (f) => (loading.textContent = `Building physics… ${Math.round(f * 100)}%`) });
+loading.textContent = 'Building collision…';
+// For the game's lines of fire and the dinosaurs' steering: plants and other compounds
+// by their physics boxes (a palm's trunk stops a bullet, its fronds do not).
+const collider = buildCollider(terrain, info, partGeoms, physics.boxes);
 loading.remove();
 
 // Player state, in game coordinates (x east, y north, z up).

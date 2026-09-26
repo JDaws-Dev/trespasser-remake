@@ -1,11 +1,25 @@
-// Static collision: the terrain plus every solid, unmoving object, merged into one
-// mesh with a bounding-volume hierarchy. Anne is a capsule pushed out of whatever
-// she overlaps each frame (the approach from three-mesh-bvh's character example).
-// All in game coordinates (metres, Z up).
+// Static collision for lines of fire and steering rays: the terrain plus every solid,
+// unmoving object, merged into one mesh with a bounding-volume hierarchy. Objects with
+// physics boxes (levels/<lvl>/physics.json: trees, palms, fences, huts) are their boxes,
+// as the original collides them (a palm's trunk, not its fronds); the rest their meshes.
+// `collider.userData.full` is the same with every mesh whole (built on first use), for
+// what should see leaves (shade). Game coordinates (metres, Z up).
 import * as THREE from 'three';
 import { MeshBVH } from 'three-mesh-bvh';
 
-export function buildCollider(terrain, info, partGeoms) {
+export function buildCollider(terrain, info, partGeoms, boxes = null) {
+  const geo = build(terrain, info, partGeoms, boxes);
+  let full = null;
+  Object.defineProperty(geo.userData, 'full', { get: () => (full ||= boxes ? build(terrain, info, partGeoms, null) : geo) });
+  return geo;
+}
+
+// A box's 12 triangles: its placement (instance, then box, in model units).
+const CORNERS = [[-1, -1, -1], [1, -1, -1], [1, 1, -1], [-1, 1, -1], [-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1]];
+const FACES = [[0, 2, 1], [0, 3, 2], [4, 5, 6], [4, 6, 7], [0, 1, 5], [0, 5, 4], [1, 2, 6], [1, 6, 5], [2, 3, 7], [2, 7, 6], [3, 0, 4], [3, 4, 7]];
+const boxMatrix = new THREE.Matrix4(), boxPart = new THREE.Matrix4();
+
+function build(terrain, info, partGeoms, boxes) {
   const chunks = [];
   const pushGeometry = (geo, matrix) => {
     const pos = geo.getAttribute('position');
@@ -35,6 +49,20 @@ export function buildCollider(terrain, info, partGeoms) {
           r[1][0] * s, r[1][1] * s, r[1][2] * s, t[1],
           r[2][0] * s, r[2][1] * s, r[2][2] * s, t[2],
           0, 0, 0, 1);
+    const sub = boxes?.[inst.name];
+    if (sub) {
+      for (const b of sub) {
+        const r2 = b.rot;
+        boxPart.set(r2[0][0] * b.half[0], r2[0][1] * b.half[1], r2[0][2] * b.half[2], b.pos[0],
+                    r2[1][0] * b.half[0], r2[1][1] * b.half[1], r2[1][2] * b.half[2], b.pos[1],
+                    r2[2][0] * b.half[0], r2[2][1] * b.half[1], r2[2][2] * b.half[2], b.pos[2], 0, 0, 0, 1);
+        boxMatrix.multiplyMatrices(m, boxPart);
+        const out = new Float32Array(36 * 3), v = new THREE.Vector3();
+        FACES.forEach((f, i) => f.forEach((c, k) => { v.fromArray(CORNERS[c]).applyMatrix4(boxMatrix); out.set([v.x, v.y, v.z], (i * 3 + k) * 3); }));
+        chunks.push(out);
+      }
+      continue;
+    }
     for (const { geo } of partGeoms.get(inst.model) || []) pushGeometry(geo, m);
   }
 
