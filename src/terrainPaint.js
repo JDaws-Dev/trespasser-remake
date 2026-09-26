@@ -6,7 +6,8 @@
 import * as THREE from 'three';
 
 const TILE_METRES = 256;
-const TILE_PIXELS = 512;   // 2 pixels per metre
+const PHONE = matchMedia('(pointer: coarse)').matches;
+const TILE_PIXELS = PHONE ? 256 : 512;   // 1 or 2 pixels per metre
 
 // Up close the baked colour (2 px/m) would blur into mush, so a fine tileable
 // grain and its normal map are laid over it at 0.4 m intervals; they fade out

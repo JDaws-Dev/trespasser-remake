@@ -94,6 +94,17 @@ export class Atmosphere {
   // The open sea: a reflecting plane with animated ripples, in game space (under
   // the world root, Z up).
   makeSea(world, level, textureUrlBase) {
+    // A reflecting sea draws the whole scene a second time every frame; phones
+    // get a plain translucent surface instead.
+    if (this.phone && !new URLSearchParams(location.search).has('hd')) {
+      const sea = new THREE.Mesh(new THREE.PlaneGeometry(20000, 20000),
+        new THREE.MeshStandardMaterial({ color: 0x2b8a8c, transparent: true, opacity: 0.8, roughness: 0.1, metalness: 0, depthWrite: false }));
+      sea.position.z = level - 0.05;
+      sea.renderOrder = 9;
+      this.setupMaterial(sea.material);
+      world.add(sea);
+      return sea;
+    }
     const normals = new THREE.TextureLoader().load(`${textureUrlBase}/detail/water_n.png`);
     normals.wrapS = normals.wrapT = THREE.RepeatWrapping;
     const water = new Water(new THREE.PlaneGeometry(20000, 20000), {

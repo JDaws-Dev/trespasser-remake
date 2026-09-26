@@ -12,14 +12,18 @@ function loadTexture(url) {
   const tex = textureLoader.load(url, done, undefined, done);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-  tex.anisotropy = 8;
+  tex.anisotropy = PHONE ? 2 : 8;
   return tex;
 }
 
 // AI-upscaled versions of the original textures, where one has been made
 // (tools/install_hd.py). The original is the fallback.
 let hd = {};
+// iOS Safari kills a tab that holds a few hundred MB of GPU memory; phones keep
+// the original textures (the upscales alone are ~110 MB decoded).
+export const PHONE = matchMedia('(pointer: coarse)').matches || /iPhone|iPad|Android/.test(navigator.userAgent);
 export function textureUrl(base, id) {
+  if (PHONE && !new URLSearchParams(location.search).has('hd')) return `${base}/tex_m/${id}.png`;   // half size (tools/phone_textures.py)
   return hd[id] ? `${base}/hd/${id}.png` : `${base}/tex/${id}.png`;
 }
 
