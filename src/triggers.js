@@ -820,6 +820,15 @@ export class Triggers {
   }
 
   do_HIDESHOW(a) {
+    const P = this.physics;
+    if (P?.setVisible && P.body(a.ObjectName)) {
+      // A physics object: physics.js hides it and takes it out of the simulation.
+      const hidden = this.hidden.has(a.ObjectName);
+      const show = a.Toggle ? hidden : a.Visible !== false;
+      P.setVisible(a.ObjectName, show);
+      if (show) this.hidden.delete(a.ObjectName); else this.hidden.set(a.ObjectName, []);
+      return 0;
+    }
     const inst = this.instByName.get(a.ObjectName);
     if (!inst) { this.miss('HIDESHOW', a.ObjectName); return 0; }
     const refs = this.game.refs[inst.index] || [];
