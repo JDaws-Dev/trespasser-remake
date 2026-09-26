@@ -96,6 +96,20 @@ export class Atmosphere {
     material.needsUpdate = true;
   }
 
+  // Behind the loading screen, after renderer.compileAsync: three checks each
+  // program's link status on its first use, which waits for the driver to finish
+  // compiling it, and uploads each texture on its first draw. Doing both here
+  // leaves the first frame only drawing.
+  warm(renderer, scene) {
+    for (const p of renderer.info.programs) p.getUniforms();
+    const seen = new Set();
+    scene.traverse((o) => {
+      for (const m of [].concat(o.material || [], o.customDepthMaterial || []))
+        for (const v of Object.values(m))
+          if (v && v.isTexture && !v.isRenderTargetTexture && v.image && !seen.has(v)) { seen.add(v); renderer.initTexture(v); }
+    });
+  }
+
   // Water: the shared inputs every water surface reads (terrain depth, sky
   // reflection, sun), then the open sea where the level has one (`level`, game z;
   // null for none). See water.js.

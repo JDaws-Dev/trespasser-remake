@@ -201,8 +201,13 @@ const frame = () => {
     new THREE.Vector3(-Math.sin(player.yaw), Math.cos(player.yaw), 0), new THREE.Vector3(0, 0, 1));
   post.render(dt);
 };
-// Compile every material's shader behind the loading screen, in parallel where the
-// browser allows, so the first frame doesn't freeze the page for seconds.
+// Compile every shader and upload every texture behind the loading screen, so the
+// first frame doesn't freeze the page for seconds. On desktop the scene is drawn into
+// the post-processing target, so compile for that target, not the canvas.
+renderer.setRenderTarget(post.composer ? post.composer.readBuffer : null);
 try { await renderer.compileAsync(scene, camera); } catch (e) { console.warn('shader precompile:', e); }
+renderer.setRenderTarget(null);
+atmosphere.warm(renderer, scene);
+frame();   // one frame here too: the shadow-map and post-pass shaders compileAsync can't reach
 renderer.setAnimationLoop(frame);
 window.__frame = frame;   // for automated tests: run one whole frame now
