@@ -60,9 +60,10 @@ if (skyTex) {
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
   tex.repeat.set(24, 24);
   tex.anisotropy = 8;
-  // Drawn over the sky dome; the haze takes over towards the horizon, where the dome shows below it.
+  // Drawn in the transparent pass so it lands over the sky dome (neither writes
+  // depth); the haze takes over towards the horizon, where the dome shows below it.
   skyPlane = new THREE.Mesh(new THREE.PlaneGeometry(9000, 9000),
-    new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide, fog: true, depthWrite: false }));
+    new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide, fog: true, depthWrite: false, transparent: true }));
   skyPlane.renderOrder = -1;
   world.add(skyPlane);
 }
