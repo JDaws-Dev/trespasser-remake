@@ -22,6 +22,7 @@ const ARM_REACH = 0.97;       // fraction of full arm length the wrist is held o
 const AIM_PITCH_MIN = -0.9, AIM_PITCH_MAX = 1.1;   // hand angle limits relative to the body (radians)
 const RAISE_RATE = 3.5;
 const MAX_STRETCH = 1.25;     // how far the arm may lengthen past its full reach
+const COMPACT_SHOULDER = new THREE.Vector3(0.04, -0.06, -0.2);   // modern hand: shoulder lowered, a little out and back (body frame)
 const EYE_HEIGHT = 1.6;
 const SHADOW_LEVEL = 0.45;    // arm brightness in shade (sky and bounce light only)       // main.js: the camera above the player's feet       // arm raises in about 1 / RAISE_RATE seconds
 
@@ -248,7 +249,8 @@ export class Anne {
   // EYE_HEIGHT above pos). holding: a gun's magnets { grip, hold, scale }, or null.
   // reach: where the player puts her hand, overriding the gun-sighting pose:
   // { palm (game-space Vector3), viewRot (Quaternion in her view frame) or rot (game-space
-  // Matrix4/Quaternion) or neither, stow (true: arm down, gun out of view) }, or null.
+  // Matrix4/Quaternion) or neither, stow (true: arm down, gun out of view), fast (reach
+  // out quickly), compact (the modern hand's low, unstretched arm) }, or null.
   update(dt, player, holding, recoil = 0, reach = null) {
     const pitch = player.pitch;
     // Eye in the body frame: the head turns about the neck.
@@ -332,12 +334,18 @@ export class Anne {
     this.held.visible = !!holding && !(stowed && this.raise < 0.25);
 
     // Two-bone reach: the elbow bends out to the right and down.
-    const S = this.shoulder;
+    const full = this.upperLen + this.foreLen - 1e-4;
+    // Compact (the modern hand): the shoulder drops out of the lower right so mostly
+    // forearm and hand show, and rather than stretching, it slides out towards a hand
+    // beyond reach. Classic keeps the original's shoulder and stretch.
+    this.compact = THREE.MathUtils.lerp(this.compact ?? 0, reach?.compact ? 1 : 0, Math.min(1, dt * 8));
+    const S = this.shoulder.clone().addScaledVector(COMPACT_SHOULDER, this.compact);
+    const over = wrist.distanceTo(S) - full * 0.97;
+    if (over > 0) S.addScaledVector(wrist.clone().sub(S).normalize(), over * this.compact);
     const toW = wrist.clone().sub(S);
     // Past full reach the arm stretches a little (the physical hand reaches 0.95 m; her
     // arm is 0.78 m to the wrist), so the drawn hand stays on it.
-    const full = this.upperLen + this.foreLen - 1e-4;
-    const stretch = THREE.MathUtils.clamp(toW.length() / full, 1, MAX_STRETCH);
+    const stretch = THREE.MathUtils.clamp(toW.length() / full, 1, THREE.MathUtils.lerp(MAX_STRETCH, 1, this.compact));
     const d = Math.min(toW.length(), full * stretch) / stretch;
     const dir = toW.clone().normalize();
     const a = (this.upperLen * this.upperLen - this.foreLen * this.foreLen + d * d) / (2 * d);

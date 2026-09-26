@@ -435,6 +435,8 @@ export class Game {
         reach = a.reachFor(e.inst.name, m, e.radius, shoulder, ph.modelBounds?.(e.inst.model).clone().applyMatrix4(m));
         a.setSubstitute(reach.sub);
       }
+      // The modern hand keeps the arm compact and light.
+      if (reach && ph?.handStyle === 'modern') reach.compact = true;
       if (!this.holding && !reach?.palm && this.pressT == null) a.setSubstitute(a.poseIndex('Anne_Natural'));
       if (this.holding) a.setSubstitute(this.holding.grip.substitute);
       this.anne.update(dt, player, this.holding, this.recoil, reach);
