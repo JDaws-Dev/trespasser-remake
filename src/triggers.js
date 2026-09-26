@@ -326,16 +326,22 @@ export class Triggers {
   // A non-point trigger against a body (bIntersects): its box's corners and centre
   // tested against the volume, and the volume's centre against its box.
   overlapsBody(t, e) {
-    const b = this.physics.modelBounds(e.inst.model), s = e.scale || 1;
-    const q = e.curQ, c = e.curP;
-    for (let i = 0; i < 9; i++) {
-      if (i === 8) _v3.copy(b.min).add(b.max).multiplyScalar(0.5);
-      else _v3.set(i & 1 ? b.max.x : b.min.x, i & 2 ? b.max.y : b.min.y, i & 4 ? b.max.z : b.min.z);
-      _v3.multiplyScalar(s).applyQuaternion(q).add(c);
-      if (this.inside(t, _v3)) return true;
+    const s = e.scale || 1, q = e.curQ, c = e.curP;
+    if (this.inside(t, c)) return true;   // its origin (a lever's pivot, a card's middle)
+    // Its physics boxes (the compound's, as the original collides it), else its mesh box.
+    const boxes = this.physics.boxes?.[e.inst.name]?.map((b) => ({ c: new THREE.Vector3().fromArray(b.pos), h: new THREE.Vector3().fromArray(b.half), r: b.rot }))
+      || [(() => { const bb = this.physics.modelBounds(e.inst.model); return { c: bb.getCenter(new THREE.Vector3()), h: bb.getSize(new THREE.Vector3()).multiplyScalar(0.5), r: null }; })()];
+    for (const b of boxes) {
+      // The volume's centre in the box's frame, clamped to the box, and back.
+      const bq = b.r ? new THREE.Quaternion().setFromRotationMatrix(_m.set(b.r[0][0], b.r[0][1], b.r[0][2], 0, b.r[1][0], b.r[1][1], b.r[1][2], 0, b.r[2][0], b.r[2][1], b.r[2][2], 0, 0, 0, 0, 1)) : new THREE.Quaternion();
+      const wq = _q2.copy(q).multiply(bq);
+      const centre = _v3.copy(b.c).multiplyScalar(s).applyQuaternion(q).add(c);
+      const local = t.origin.clone().sub(centre).applyQuaternion(wq.clone().invert());
+      const hs = b.h.clone().multiplyScalar(s);
+      local.clamp(hs.clone().negate(), hs);
+      if (this.inside(t, local.applyQuaternion(wq).add(centre))) return true;
     }
-    _v3.copy(t.origin).sub(c).applyQuaternion(_q2.copy(q).invert()).divideScalar(s);
-    return b.containsPoint(_v3);
+    return false;
   }
 
   // CLocationTrigger::Evaluate: something crossed the volume's boundary.
@@ -745,13 +751,16 @@ export class Triggers {
     const loader = new THREE.TextureLoader();
     for (const [name, spec] of Object.entries(anim)) {
       if (!targets.has(name)) continue;
-      const inst = this.instByName.get(name);
-      const refs = inst && this.game.refs[inst.index];
-      if (!refs?.length) { this.miss('ANIM_TEX object not drawn', name); continue; }
-      const parts = this.game.info.models[inst.model]?.parts || [];
+      // The animating mesh is shared by every copy of the object (its -00 prototype is
+      // often parked off the map, and the copies -01.. are what is seen).
+      const base = name.replace(/-\d+$/, '');
+      const copies = this.game.info.instances.filter((i) => i.name.replace(/-\d+$/, '') === base && this.game.refs[i.index]?.length);
+      if (!copies.length) { this.miss('ANIM_TEX object not drawn', name); continue; }
       const first = spec.frames[0];
       const meshes = [];
-      refs.forEach(({ mesh, i }, k) => {
+      for (const inst of copies) {
+      const parts = this.game.info.models[inst.model]?.parts || [];
+      this.game.refs[inst.index].forEach(({ mesh, i }, k) => {
         // The animated surface: AnimSubMaterial, else those drawn with frame 0's
         // texture, else all of them.
         const tex = parts[k]?.texture;
@@ -765,11 +774,12 @@ export class Triggers {
         meshes.push({ m, mesh, i, animate });
         mesh.setMatrixAt(i, _m.makeScale(0, 0, 0)); mesh.instanceMatrix.needsUpdate = true;
       });
-      const base = meshes.find((x) => x.animate)?.m.material.map;
+      }
+      const baseMap = meshes.find((x) => x.animate)?.m.material.map;
       const frames = spec.frames.map((id) => {
         if (!id) return null;
         const t = loader.load(`levels/${this.level}/tex/${id}.png`);
-        if (base) { t.wrapS = base.wrapS; t.wrapT = base.wrapT; t.flipY = base.flipY; t.colorSpace = base.colorSpace; t.anisotropy = base.anisotropy; }
+        if (baseMap) { t.wrapS = baseMap.wrapS; t.wrapT = baseMap.wrapT; t.flipY = baseMap.flipY; t.colorSpace = baseMap.colorSpace; t.anisotropy = baseMap.anisotropy; }
         else t.colorSpace = THREE.SRGBColorSpace;
         return t;
       });
