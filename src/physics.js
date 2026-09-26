@@ -182,6 +182,21 @@ export class Physics {
     this.world.step();
     for (const e of this.entries) e.body.sleep();   // the step's new contacts woke them
 
+    // --- CEntityAttached (the lab vault's lock lights and hand reader): drawn riding on
+    // their Target object, wherever its body goes.
+    this.attached = [];
+    const byName2 = new Map(this.entries.map((e) => [e.inst.name, e]));
+    for (const inst of info.instances) {
+      if (inst.cls !== 'CEntityAttached' || !refs[inst.index]) continue;
+      const target = byName2.get(inst.props?.Target);
+      if (!target) continue;
+      const r = inst.rot, sc = inst.scale, t = inst.pos;
+      const m = new THREE.Matrix4().set(r[0][0] * sc, r[0][1] * sc, r[0][2] * sc, t[0], r[1][0] * sc, r[1][1] * sc, r[1][2] * sc, t[1],
+        r[2][0] * sc, r[2][1] * sc, r[2][2] * sc, t[2], 0, 0, 0, 1);
+      const tm = new THREE.Matrix4().compose(target.curP, target.curQ, new THREE.Vector3(1, 1, 1));
+      this.attached.push({ inst, target, rel: tm.invert().multiply(m) });
+    }
+
     // --- Anne: a capsule moved by the character controller. It is a parentless
     // collider that takes no part in contacts itself (she pushes with impulses).
     this.cc = this.world.createCharacterController(0.02);
@@ -314,18 +329,25 @@ export class Physics {
     e.pinned = this.joints.some((j) => j.joint && j.slave === e && !j.master && j.kind === 'weld');
   }
 
-  removeJoint(j) {
-    if (!j.joint) return;
-    this.world.removeImpulseJoint(j.joint, true);
-    if (j.anchor) this.world.removeRigidBody(j.anchor);
-    j.joint = null; j.anchor = null;
+  // Remove a magnet's joint (and its world anchor body); `forget` also drops the record.
+  removeJoint(j, forget = false) {
+    if (j.joint) {
+      this.world.removeImpulseJoint(j.joint, true);
+      if (j.anchor) this.world.removeRigidBody(j.anchor);
+      j.joint = null; j.anchor = null;
+    }
+    if (forget) { const i = this.joints.indexOf(j); if (i >= 0) this.joints.splice(i, 1); }
     this.pinCheck(j.slave);
   }
 
   // ---------------------------------------------------------------- trigger actions
   // For the trigger system (GameActions.cpp: SET_PHYSICS, MAGNET): objects by name.
   body(name) {
-    if (!this.byName) this.byName = new Map(this.entries.map((e) => [e.inst.name, e]));
+    if (!this.byName) {
+      this.byName = new Map(this.entries.map((e) => [e.inst.name, e]));
+      // Something attached to a body is moved by moving that body.
+      for (const a of this.attached) if (!this.byName.has(a.inst.name)) this.byName.set(a.inst.name, a.target);
+    }
     return this.byName.get(name) || null;
   }
 
@@ -1010,6 +1032,11 @@ export class Physics {
       // Fell out of the world (off the terrain's edge): take it out of the simulation.
       if (e.curP.z < -200) { e.body.setEnabled(false); this.live.delete(e); continue; }
       if (e.body.isSleeping() || !e.body.isEnabled()) { if (e.prevP.equals(e.curP)) this.live.delete(e); }
+    }
+    for (const a of this.attached) {
+      if (!this.live.has(a.target)) continue;
+      _m.compose(a.target.curP, a.target.curQ, _s.setScalar(1)).multiply(a.rel);
+      for (const { mesh, i } of this.refs[a.inst.index] || []) { mesh.setMatrixAt(i, _m); mesh.instanceMatrix.needsUpdate = true; }
     }
     if (steps) this.stepMs = performance.now() - t0;
     this.steps = steps;
