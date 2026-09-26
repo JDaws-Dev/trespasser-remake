@@ -12,7 +12,7 @@ export class Input {
     addEventListener('mousedown', (e) => { if (document.pointerLockElement === canvas && e.button === 0) this.pressed.add('Fire'); });
     addEventListener('keyup', (e) => this.keys.delete(e.code));
     addEventListener('blur', () => this.keys.clear());
-    canvas.addEventListener('click', () => { if (!this.touch) canvas.requestPointerLock?.(); });
+    canvas.addEventListener('click', () => { if (!this.touch) { try { canvas.requestPointerLock?.()?.catch?.(() => {}); } catch (e) { /* not allowed here */ } } });
     addEventListener('mousemove', (e) => {
       if (document.pointerLockElement === canvas) { this.mouse.x += e.movementX; this.mouse.y += e.movementY; }
     });

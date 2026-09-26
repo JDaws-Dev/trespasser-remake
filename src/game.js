@@ -8,8 +8,8 @@ const RAPTOR_DAMAGE = 12, RAPTOR_BITE_COOLDOWN = 1.1;
 const PLAYER_HP = 100;
 
 export class Game {
-  constructor({ scene, world, camera, info, refs, collider, groundAt, hud, level }) {
-    Object.assign(this, { scene, world, camera, info, refs, collider, groundAt, hud, level });
+  constructor({ scene, world, camera, info, refs, collider, groundAt, hud, level, audio }) {
+    Object.assign(this, { scene, world, camera, info, refs, collider, groundAt, hud, level, audio });
     this.hp = PLAYER_HP;
     this.gun = null;            // the gun in hand
     this.cooldown = 0;
@@ -38,7 +38,10 @@ export class Game {
         raptor: /raptor/i.test(inst.props.Type || inst.name),
         alive: true, bite: 0, wander: Math.random() * 6.28, wanderT: 0,
         radius: /raptor/i.test(inst.props.Type || inst.name) ? 1.2 : 5,
-        scale: inst.scale, awake: false,
+        scale: inst.scale, awake: false, callT: 5 + Math.random() * 20,
+        vocal: /raptor/i.test(inst.name) ? 'Raptor' : /brachi/i.test(inst.name) ? 'Brachiosaur' : /trex|rex/i.test(inst.name) ? 'Trex'
+             : /alberto/i.test(inst.name) ? 'Albertosaur' : /para/i.test(inst.name) ? 'Parasaurolophus' : /trike|tricer/i.test(inst.name) ? 'Triceratops'
+             : /steg/i.test(inst.name) ? 'Stegosaur' : null,
       }));
 
     // The held gun is drawn from the same geometry as the pickup, parented to the camera.
@@ -109,9 +112,10 @@ export class Game {
     if (!g || this.cooldown > 0) return;
     const rof = g.inst.props.ROF || 2;
     this.cooldown = 1 / rof;
-    if (g.ammo <= 0) { this.showHint('Empty', 0.8); return; }
+    if (g.ammo <= 0) { this.showHint('Empty', 0.8); this.audio?.play(g.inst.props.EmptyClipSample); return; }
     g.ammo--;
     this.recoil = 1;
+    this.audio?.play(g.inst.props.Sample, { volume: 0.8 });
     // A ray along the view: the nearest dinosaur within range, unless scenery is closer.
     const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion);
     const origin = this.camera.position.clone();
@@ -132,14 +136,17 @@ export class Game {
     }
     if (target) {
       target.hp -= (g.inst.props.Damage || 10) * (g.inst.props.DamageMultiplier || 1);
+      const wasAwake = target.awake;
       target.awake = true;
       if (target.hp <= 0) this.kill(target);
+      else this.audio?.vocal(target.vocal, wasAwake ? 'Pain' : 'Snarl', target.pos);
     }
     this.showHint(`${g.ammo} rounds`, 1);
   }
 
   kill(d) {
     d.alive = false;
+    this.audio?.vocal(d.vocal, 'Dying', d.pos);
     // Down on its side.
     const side = new THREE.Matrix4().makeRotationY(Math.PI / 2);
     d.pos.z = this.groundAt(d.pos.x, d.pos.y) + d.radius * 0.6;
@@ -170,7 +177,7 @@ export class Game {
       const toPlayer = player.pos.clone().sub(d.pos);
       const dist = toPlayer.length();
       if (d.raptor) {
-        if (dist < RAPTOR_SIGHT) d.awake = true;
+        if (dist < RAPTOR_SIGHT && !d.awake) { d.awake = true; this.audio?.vocal(d.vocal, 'Roar', d.pos); }
         if (d.awake && dist > 1.5) {
           const want = Math.atan2(toPlayer.y, toPlayer.x) - Math.PI / 2;   // models face +Y
           let diff = ((want - d.yaw + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI;
@@ -183,6 +190,7 @@ export class Game {
         d.bite = Math.max(0, d.bite - dt);
         if (d.awake && dist < RAPTOR_BITE && d.bite === 0) {
           d.bite = RAPTOR_BITE_COOLDOWN;
+          this.audio?.vocal(d.vocal, Math.random() < 0.5 ? 'Bite' : 'Attack', d.pos);
           this.hurt(RAPTOR_DAMAGE);
         }
       } else {
@@ -194,6 +202,9 @@ export class Game {
         d.pos.x += -Math.sin(d.yaw) * 0.8 * dt;
         d.pos.y += Math.cos(d.yaw) * 0.8 * dt;
       }
+      // Now and then a call, so you hear what is out there.
+      d.callT -= dt;
+      if (d.callT <= 0 && dist < 250) { d.callT = 12 + Math.random() * 25; this.audio?.vocal(d.vocal, d.raptor ? (d.awake ? 'Snarl' : 'Call') : 'Call', d.pos, 0.8); }
       d.pos.z = this.groundAt(d.pos.x, d.pos.y);
       // A little gait: bob while moving.
       const bob = d.raptor && d.awake ? new THREE.Matrix4().makeRotationX(Math.sin(now / 90) * 0.05) : null;

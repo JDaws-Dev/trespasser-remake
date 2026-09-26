@@ -7,6 +7,7 @@ import { Input } from './input.js';
 import { paintTerrain } from './terrainPaint.js';
 import { buildCollider, moveCapsule } from './collision.js';
 import { Game } from './game.js';
+import { Audio } from './audio.js';
 
 const LEVEL = new URLSearchParams(location.search).get('level') || 'be';
 const EYE_HEIGHT = 1.6;       // metres
@@ -117,7 +118,8 @@ if (at) {
 }
 window.__player = player; window.__scene = scene;   // for automated tests
 const input = new Input(renderer.domElement);
-const game = new Game({ scene, world, camera, info, refs, collider, groundAt, hud, level: LEVEL });
+const audio = new Audio(`levels/${LEVEL}`);
+const game = new Game({ scene, world, camera, info, refs, collider, groundAt, hud, level: LEVEL, audio });
 game.showHint(input.touch ? 'Left stick walks, right stick looks. GRAB picks up a gun, FIRE shoots.' : 'Click to look · WASD walk · Shift run · E pick up · click to fire · G drop', 7);
 window.__game = game;
 
@@ -156,5 +158,7 @@ renderer.setAnimationLoop(() => {
   camera.quaternion.premultiply(world.quaternion);
 
   if (skyPlane) skyPlane.position.set(player.pos.x, player.pos.y, player.pos.z + 350);
+  audio.updateListener(new THREE.Vector3(player.pos.x, player.pos.y, player.pos.z + EYE_HEIGHT),
+    new THREE.Vector3(-Math.sin(player.yaw), Math.cos(player.yaw), 0), new THREE.Vector3(0, 0, 1));
   renderer.render(scene, camera);
 });
