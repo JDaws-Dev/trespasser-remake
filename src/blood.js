@@ -172,7 +172,7 @@ function makeMistTexture() {
     for (const [cx, cy, r] of lumps) a = Math.max(a, 1 - Math.hypot(u - cx, v - cy) / r);
     a *= Math.max(0, 1 - Math.hypot(u, v) * 2);
     const i = (y * n + x) * 4;
-    data[i] = 255; data[i + 1] = 255; data[i + 2] = 255; data[i + 3] = Math.max(0, Math.min(255, a * a * 400));
+    data[i] = 255; data[i + 1] = 255; data[i + 2] = 255; data[i + 3] = Math.max(0, Math.min(255, a * 520));
   }
   const tex = new THREE.DataTexture(data, n, n);
   tex.generateMipmaps = true;
@@ -190,12 +190,12 @@ function makeScreenSplatter(w, h) {
   const ctx = c.getContext('2d');
   const paint = (x, y, r) => {
     const g = ctx.createRadialGradient(x, y, 0, x, y, r * 1.3);
-    g.addColorStop(0, 'rgba(48,0,3,0.96)');
-    g.addColorStop(0.7, 'rgba(92,3,6,0.92)');
-    g.addColorStop(1, 'rgba(130,8,10,0.85)');
+    g.addColorStop(0, 'rgba(30,0,2,0.97)');
+    g.addColorStop(0.6, 'rgba(62,2,4,0.95)');
+    g.addColorStop(1, 'rgba(98,5,6,0.9)');
     ctx.fillStyle = g;
   };
-  const splashes = 7 + Math.floor(Math.random() * 4);
+  const splashes = 5 + Math.floor(Math.random() * 3);
   for (let k = 0; k < splashes; k++) {
     // A point on the border, more often in the corners and along the top.
     const side = Math.random();
@@ -206,7 +206,8 @@ function makeScreenSplatter(w, h) {
     else { x = rand(0, w); y = rand(0.92, 1.05) * h; }
     const R = rand(0.05, 0.13) * h;
     paint(x, y, R);
-    for (let i = 0; i < 4; i++) blob(ctx, x + rand(-0.5, 0.5) * R, y + rand(-0.5, 0.5) * R, R * rand(0.5, 1), 0.35);
+    for (let i = 0; i < 3; i++) blob(ctx, x + rand(-0.5, 0.5) * R, y + rand(-0.5, 0.5) * R, R * rand(0.5, 0.9), 0.4);
+    for (let i = 0; i < 10; i++) { const t = Math.random() * Math.PI * 2, d = R * rand(0.6, 1.1); blob(ctx, x + Math.cos(t) * d, y + Math.sin(t) * d, R * rand(0.08, 0.25), 0.4); }
     // Droplets flung toward the middle, stretched along their flight.
     const toC = Math.atan2(h / 2 - y, w / 2 - x);
     for (let i = 0; i < 26; i++) {
@@ -218,7 +219,7 @@ function makeScreenSplatter(w, h) {
     const runs = y < h * 0.6 ? 2 + Math.floor(Math.random() * 3) : 0;
     for (let i = 0; i < runs; i++) {
       const rx = x + rand(-0.7, 0.7) * R, len = rand(0.08, 0.3) * h, lw = rand(3, 8) * (h / 540);
-      ctx.strokeStyle = 'rgba(88,3,6,0.9)';
+      ctx.strokeStyle = 'rgba(58,2,4,0.92)';
       ctx.lineWidth = lw; ctx.lineCap = 'round';
       ctx.beginPath(); ctx.moveTo(rx, y); ctx.lineTo(rx + rand(-4, 4), y + len); ctx.stroke();
       paint(rx, y + len, lw);
@@ -227,7 +228,7 @@ function makeScreenSplatter(w, h) {
     // A wet highlight on the bigger splashes.
     ctx.save();
     ctx.globalCompositeOperation = 'source-atop';
-    ctx.fillStyle = 'rgba(255,220,220,0.16)';
+    ctx.fillStyle = 'rgba(255,225,225,0.12)';
     ctx.shadowColor = 'rgba(255,220,220,0.3)'; ctx.shadowBlur = 6;
     ellipse(ctx, x - R * 0.25, y - R * 0.3, R * 0.25, R * 0.08, -0.5);
     ctx.restore();
@@ -378,8 +379,8 @@ export class Blood {
     const hit = this.surfaceHit(d, ray, dist);
     const dir = ray.direction;
     // Exit spray along the bullet, a back-splash toward the shooter.
-    this.spray(hit.point, dir, 0.55, rand(4, 8) * Math.sqrt(power), Math.round(50 * power), 0.035 * Math.sqrt(power));
-    this.spray(hit.point, hit.normal, 0.8, rand(2, 4), Math.round(26 * power), 0.03);
+    this.spray(hit.point, dir, 0.55, rand(4, 8) * Math.sqrt(power), Math.round(70 * power), 0.024 * Math.sqrt(power));
+    this.spray(hit.point, hit.normal, 0.8, rand(2, 4), Math.round(36 * power), 0.02);
     this.puff(hit.point, dir, Math.round(5 + 4 * power), 0.5 + 0.3 * power);
     this.addWound(d, hit.point, hit.normal, 0.26 + 0.08 * power);
     // A splash on the ground below and beyond the hit.
@@ -740,18 +741,20 @@ export class Blood {
   // ---------- Blood on the view ----------
 
   initScreen() {
-    const layer = (z) => {
+    const layer = () => {
       const el = document.createElement('div');
       Object.assign(el.style, {
         position: 'fixed', left: '0', top: '-2%', width: '100%', height: '104%', pointerEvents: 'none', opacity: '0',
-        backgroundSize: '100% 100%', backgroundRepeat: 'no-repeat', zIndex: String(z), willChange: 'opacity, transform',
+        backgroundSize: '100% 100%', backgroundRepeat: 'no-repeat', willChange: 'opacity, transform',
       });
       el.className = 'blood-screen';
-      document.body.appendChild(el);
+      // Just above the game view, beneath the HUD and the menus.
+      const canvas = document.querySelector('body > canvas');
+      if (canvas) canvas.after(el); else document.body.appendChild(el);
       return el;
     };
-    this.screen = [layer(3), layer(3)];
-    this.screenLow = layer(3);
+    this.screen = [layer(), layer()];
+    this.screenLow = layer();
     this.screenNext = 0;
     this.lowShown = -1;
     // The images are drawn a moment after start, off the first frame's path.

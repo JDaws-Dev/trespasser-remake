@@ -7,13 +7,16 @@ import { Input } from './input.js';
 import { paintTerrain } from './terrainPaint.js';
 import { buildCollider } from './collision.js';
 import { createPhysics } from './physics.js';
+import { HandControls } from './hand.js';
 import { Game } from './game.js';
+import { Triggers } from './triggers.js';
 import { Audio } from './audio.js';
 import { Atmosphere, setupRenderer } from './atmosphere.js';
 import { createPost } from './post.js';
 
 const LEVEL = new URLSearchParams(location.search).get('level') || 'be';
 const EYE_HEIGHT = 1.6;       // metres
+const CROUCH = 0.72;          // eye drop when crouching (PlayerSettings.fCrouchDist)
 const WALK = 3.0, RUN = 6.5;  // metres per second
 const GRAVITY = 9.8;
 
@@ -128,6 +131,8 @@ game.showHint(input.touch ? 'Left stick walks, right stick looks. GRAB picks up 
 window.__game = game;
 game.physics = physics;
 physics.attachGame(game);
+new Triggers({ game, physics, player, audio, level: LEVEL, groundAt });   // the level's triggers (logic.json): game.logic
+const handControls = new HandControls({ canvas: renderer.domElement, physics, touch: input.touch });
 const sfx = window.__sfx = new (await import('./sfx.js')).Sfx({ audio, game, physics, info, groundAt });   // collisions, footsteps, Anne's voice
 
 const clock = new THREE.Clock();
@@ -140,11 +145,21 @@ renderer.setAnimationLoop(() => {
   gaitUniforms.uTime.value = clock.elapsedTime;
   game.update(dt, player, move);
 
-  player.yaw -= move.look.x;
-  player.pitch = THREE.MathUtils.clamp(player.pitch - move.look.y, -1.45, 1.45);
+  // With the hand raised the mouse (or right stick) moves Anne's hand, or with
+  // Shift / Ctrl turns her wrist, instead of turning her head.
+  const hc = handControls.poll();
+  if (physics.hand.aiming) {
+    if (hc.rotate) physics.rotateWrist(move.look.x, move.look.y, hc.roll, hc.reset);
+    else physics.moveHand(move.look.x, move.look.y, player);
+  } else {
+    player.yaw -= move.look.x;
+    player.pitch = THREE.MathUtils.clamp(player.pitch - move.look.y, -1.45, 1.45);
+  }
+  // Crouch (the original's fCrouchDist) eases the eye down.
+  player.crouch = THREE.MathUtils.lerp(player.crouch || 0, hc.crouch || physics.hand.autoCrouch ? CROUCH : 0, Math.min(1, dt * 10));
 
   // Walk relative to where Anne faces (yaw 0 looks along +Y).
-  const speed = move.run ? RUN : WALK;
+  const speed = (move.run ? RUN : WALK) * (hc.crouch ? 0.5 : 1);
   const fx = -Math.sin(player.yaw), fy = Math.cos(player.yaw);
   player.vz -= GRAVITY * dt;
   const delta = new THREE.Vector3(
@@ -162,7 +177,7 @@ renderer.setAnimationLoop(() => {
   if (player.pos.z < -50) player.pos.z = groundAt(player.pos.x, player.pos.y) + 1;
 
   // Camera: game-space eye position and orientation, mapped through the world root.
-  eye.set(player.pos.x, player.pos.y, player.pos.z + EYE_HEIGHT).applyMatrix4(world.matrixWorld);
+  eye.set(player.pos.x, player.pos.y, player.pos.z + EYE_HEIGHT - player.crouch).applyMatrix4(world.matrixWorld);
   camera.position.copy(eye);
   lookEuler.set(Math.PI / 2 + player.pitch, 0, player.yaw);
   camera.quaternion.setFromEuler(lookEuler);

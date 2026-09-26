@@ -61,9 +61,9 @@ export class Game {
       d.foot = -minZ * d.scale;
     }
 
-    // Location triggers with sounds: Hammond's narration and Anne's lines play once
-    // where the level places them; ambient loops play while Anne is inside their box.
-    this.triggers = (info.triggers || []).map((tr) => ({ ...tr, fired: 0, inside: false, source: null }));
+    // The level's triggers (triggers.js, from logic.json) are set as this.logic by main.js.
+    this.logic = null;
+    this.maxHp = PLAYER_HP;
 
     // The held gun is drawn from the same geometry as the pickup, parented to the camera.
     this.hand = new THREE.Group();
@@ -106,6 +106,7 @@ export class Game {
 
   tryPickup(player) {
     if (this.physics?.held) return this.physics.release();   // E again lets go of a held object
+    if (this.physics?.hand.aiming && this.physics.handGrab(player) === true) return true;   // the raised hand grabs / lets go
     let best = null, bestD = 3.0;
     for (const p of this.pickups) {
       if (p.taken) continue;
@@ -175,7 +176,7 @@ export class Game {
   }
 
   fire(player) {
-    if (this.physics?.throw(player)) return;   // holding a crate or a rock: throw it
+    if (this.physics?.handFire(player)) return;   // hand up: grab / let go; carrying: throw; gun stowed: nothing
     const g = this.gun;
     if (!g || this.cooldown > 0) return;
     const rof = g.inst.props.ROF || 2;
@@ -225,33 +226,15 @@ export class Game {
     this.setInstanceMatrix(d.index, this.matrixFor(d.inst, d.pos, d.yaw, side));
   }
 
-  updateTriggers(player) {
-    // Browsers allow sound only after the first tap or key: until then, leave the
-    // triggers unarmed so nothing plays silently and gets counted as heard.
-    if (!this.audio?.ctx || this.audio.ctx.state !== 'running') return;
-    for (const tr of this.triggers) {
-      const inside = Math.abs(player.pos.x - tr.pos[0]) < tr.half[0] + 0.5 &&
-                     Math.abs(player.pos.y - tr.pos[1]) < tr.half[1] + 0.5 &&
-                     Math.abs(player.pos.z - tr.pos[2]) < tr.half[2] + 2.5;
-      if (inside && !tr.inside) {
-        if (tr.kind === 'loop') {
-          this.audio?.play(tr.sample, { loop: true, volume: 0.6 }).then((s) => (tr.source = s));
-        } else if (tr.fired < (tr.fireCount || 1)) {
-          tr.fired++;
-          this.audio?.play(tr.sample, { volume: tr.kind === 'music' ? 0.5 : 1 });
-        }
-      }
-      if (!inside && tr.inside && tr.source) {
-        try { tr.source.stop(); } catch (e) { /* already ended */ }
-        tr.source = null;
-      }
-      tr.inside = inside;
-    }
+  // The original's trigger system: narration, ambient sets, tutorial text, hints,
+  // scripted physics, level changes (triggers.js).
+  updateTriggers(dt, player) {
+    this.logic?.update(dt, player);
   }
 
   update(dt, player, input) {
     if (this.dead || this.ui.paused) return;
-    this.updateTriggers(player);
+    this.updateTriggers(dt, player);
     this.cooldown = Math.max(0, this.cooldown - dt);
     if (input.pickup) this.tryPickup(player);
     if (input.drop) this.drop(player);
@@ -273,7 +256,7 @@ export class Game {
         reach = { stow: true };
       } else if (hand && hand.mode === 'arm' && hand.target) {
         const r = hand.rotation || null;
-        reach = { palm: hand.target, viewRot: r?.isQuaternion ? r : null, rot: r && !r.isQuaternion ? r : null };
+        reach = { palm: hand.pos || hand.target, viewRot: r?.isQuaternion ? r : null, rot: r && !r.isQuaternion ? r : null };
         if (!this.holding) {
           const held = hand.holding && (hand.holding.inst ? hand.holding : ph.byHandle?.get(hand.holding.handle) || ph.held?.entry);
           a.setSubstitute(hand.holding ? gripOf(held) : 0);   // gripping, else open
@@ -355,5 +338,17 @@ export class Game {
     } else {
       this.ui.flash(amount / 25);
     }
+  }
+
+  // Hit points back (a trigger's heal, the splash-down in Industrial Jungle), up to the maximum.
+  heal(amount) {
+    if (this.dead) return;
+    this.hp = Math.min(this.maxHp || PLAYER_HP, this.hp + amount);
+    this.ui.update({ hp: this.hp, maxHp: this.maxHp || PLAYER_HP, gun: this.gun, hint: this.hint });
+  }
+
+  // Killed outright (a trigger's death zone).
+  killAnne() {
+    if (!this.dead) this.hurt(Math.max(this.hp, 1) + 1);
   }
 }

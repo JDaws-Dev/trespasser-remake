@@ -258,10 +258,12 @@ export class Anne {
       // a rotation in her view frame (x right, y ahead, z up of the view), or given in game
       // space, or by default fingers pointing away from her, palm down.
       const unYaw = new THREE.Matrix4().makeRotationZ(-player.yaw);
-      const palm = reach.palm.clone().sub(tmpV.set(player.pos.x, player.pos.y, player.pos.z + EYE_HEIGHT)).applyMatrix4(unYaw).add(eye);
+      const palm = reach.palm.clone().sub(tmpV.set(player.pos.x, player.pos.y, player.pos.z + EYE_HEIGHT - (player.crouch || 0))).applyMatrix4(unYaw).add(eye);
       let rot;
       if (reach.viewRot) {
         rot = new THREE.Matrix4().makeRotationFromQuaternion(reach.viewRot).premultiply(eyeRot);
+        // Holding a gun, the wrist turns from the sighting grip (the gun pointing ahead).
+        if (holding) rot.multiply(mat3ToMatrix4(holding.hold.rot).invert().multiply(mat3ToMatrix4(holding.grip.rot)));
       } else if (reach.rot) {
         rot = reach.rot.isQuaternion ? new THREE.Matrix4().makeRotationFromQuaternion(reach.rot) : new THREE.Matrix4().extractRotation(reach.rot);
         rot.premultiply(unYaw);
