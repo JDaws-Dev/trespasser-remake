@@ -281,7 +281,7 @@ class Win {
         place(e, l, t, r - l, b - t);
         e.fill = el('i', '', e);
         e.fill.style.background = `rgb(${c.color.join(',')})`;
-        e.fill.style.width = '0%';
+        e.fill.style.transform = 'scaleX(0)';
         break;
       }
       default:
@@ -353,7 +353,14 @@ class Win {
     e.thumb.style.left = (e.units > 1 ? (v / (e.units - 1)) * (w - 10) : 0) + 'px';
   }
 
-  setProgress(id, f) { const e = this.get(id); if (e) e.fill.style.width = (100 * Math.min(1, Math.max(0, f))) + '%'; }
+  // The fill is a scaled transform so a long glide (secs) runs on the compositor and
+  // keeps moving while level building holds up the page's main thread.
+  setProgress(id, f, secs = 0) {
+    const e = this.get(id);
+    if (!e) return;
+    e.fill.style.transition = secs ? `transform ${secs}s cubic-bezier(.12, .7, .3, 1)` : 'none';
+    e.fill.style.transform = `scaleX(${Math.min(1, Math.max(0, f))})`;
+  }
 
   // Listbox rows; onPick(index) on selection, onOpen(index) on a double click / second tap.
   fill(id, items, { onPick, onOpen } = {}) {
@@ -393,13 +400,15 @@ class FrontEnd {
     addEventListener('keydown', (e) => this.key(e), true);
     this.watchLoading();
     // A GPU that stalls long enough during the level build (seconds of shader compiles
-    // and terrain baking on a slow device) can lose the WebGL context, which leaves a
-    // black view that only a reload cures. Do that reload for the player, once.
-    document.addEventListener('webglcontextlost', () => {
-      let tried = false;
-      try { tried = sessionStorage.getItem('trespasser.ctxlost') === location.search; sessionStorage.setItem('trespasser.ctxlost', location.search); } catch (e) { /* private mode */ }
-      if (!tried) go(LEVEL, this.mode === 'menu' || this.mode === 'boot' || this.mode === 'video' ? { menu: 1 } : { play: 1 });
+    // and terrain baking on a slow device) can lose the WebGL context, which would
+    // otherwise leave a black view. Ask for it back (preventDefault), say so, and once
+    // it returns, or hasn't in a few seconds, reload into the same place: three.js
+    // alone can't rebuild the level's GPU data.
+    document.addEventListener('webglcontextlost', (e) => {
+      e.preventDefault();
+      this.contextLost();
     }, true);
+    document.addEventListener('webglcontextrestored', () => this.contextBack(), true);
   }
 
   // Stage scale: the 640x480 screen letterboxed into the window. Dialogs follow it
@@ -467,7 +476,7 @@ class FrontEnd {
   watchLoading() {
     this.phase = 0;
     this.fetched = 0;
-    const phases = ['Building world', 'Painting', 'Building collision'];
+    const phases = ['Building world', 'Painting', 'Building collision', 'Building physics'];
     const src = document.getElementById('loading');
     if (!src) return;
     const read = () => {
@@ -476,12 +485,32 @@ class FrontEnd {
       if (i >= 0) this.phase = Math.max(this.phase, i + 1);
     };
     new MutationObserver(read).observe(src, { childList: true, characterData: true, subtree: true });
-    new MutationObserver(() => { if (!src.isConnected) this.phase = 4; }).observe(document.body, { childList: true });
+    new MutationObserver(() => { if (!src.isConnected) this.phase = Math.max(this.phase, 5); }).observe(document.body, { childList: true });
     try {
       new PerformanceObserver((list) => {
         for (const e of list.getEntries()) if (e.name.includes('/levels/')) this.fetched++;
       }).observe({ type: 'resource', buffered: true });
     } catch (e) { /* no resource timing */ }
+  }
+
+  contextLost() {
+    if (this.restoring) return;
+    const where = this.mode === 'game' || this.mode === 'loader' ? { play: 1 } : { menu: 1 };
+    this.restoring = where;
+    const box = el('div', 'fe-restoring', document.body);
+    box.textContent = 'Restoring…';
+    // Give up waiting for the browser after a few seconds.
+    this.restoreTimer = setTimeout(() => this.contextBack(), 4000);
+  }
+
+  contextBack() {
+    if (!this.restoring) return;
+    clearTimeout(this.restoreTimer);
+    // Once per URL: if the reloaded page loses it again, stay put rather than loop.
+    let again = false;
+    try { again = sessionStorage.getItem('trespasser.ctxlost') === location.pathname + location.search; sessionStorage.setItem('trespasser.ctxlost', location.pathname + url(LEVEL, this.restoring)); } catch (e) { /* private mode */ }
+    if (again) { document.querySelector('.fe-restoring').textContent = 'The graphics device was lost. Reload the page to continue.'; return; }
+    go(LEVEL, this.restoring);
   }
 
   whenReady() { return this.ui ? Promise.resolve() : new Promise((r) => this.readyWaiters.push(r)); }
@@ -490,7 +519,7 @@ class FrontEnd {
   attach(ui, game) {
     this.ui = ui;
     this.game = game;
-    this.phase = 5;
+    this.phase = 6;
     applyVideoSettings();
     for (const r of this.readyWaiters.splice(0)) r();
   }
@@ -739,48 +768,118 @@ class FrontEnd {
   }
 
   // Controls: the original remapping screen, filled from the remake's key map
-  // (controls.js KEYMAP) on desktop, or with the touch buttons on a phone. Pointing
-  // at a row (the original's click-to-remap hotspots) shows its keys, the original
-  // key and any note in the line where Invert Mouse was.
+  // (controls.js KEYMAP) on desktop, or with the touch buttons on a phone. The Invert
+  // Mouse row becomes the Hand choice (physics.handStyle: the modern look-and-click
+  // hand or the original's mouse-moved one), and the list follows it. Pointing at a row
+  // (the original's click-to-remap hotspots) shows its keys and the original key above,
+  // and its note below.
   controlsDialog() {
-    const win = new Win('controls', { onButton: () => this.pop(win) });
+    const physics = () => this.game?.physics || window.__physics;
+    let style = physics()?.handStyle;
+    if (!style) { try { style = localStorage.getItem('trespasser.handStyle'); } catch (e) { /* storage blocked */ } }
+    style = style === 'classic' ? 'classic' : 'modern';
+    const win = new Win('controls', {
+      onButton: (id) => {
+        if (id === 1002) { setStyle('modern'); return; }   // Defaults
+        if (id === ID.OK) {
+          const ph = physics();
+          if (ph?.setHandStyle) ph.setHandStyle(style);
+          else { try { localStorage.setItem('trespasser.handStyle', style); } catch (e) { /* storage blocked */ } }
+        }
+        this.pop(win);
+      },
+    });
     const texts = [...win.el.querySelectorAll('.fe-text')];
     const at = (x, y) => texts.find((e) => parseFloat(e.style.left) === x && parseFloat(e.style.top) === y);
+    const byAction = Object.fromEntries(KEYMAP.map((k) => [k.action, k]));
+
+    // The Invert Mouse row (nothing to invert here) becomes: Hand  [ ] Modern  [ ] Classic 1998.
+    win.show(102, false);
+    at(80, 18)?.remove();
+    for (const h of win.el.querySelectorAll('.fe-hot')) if (parseFloat(h.style.top) === 18) h.remove();
+    const checks = ['check_0.png', 'check_1.png', 'check_2.png', 'check_3.png'];
+    win.add({ type: 'textbox', visible: 1, id: 901, rect: [10, 18, 90, 32], text: 'Hand', size: 10, flags: 0x26 });
+    win.add({ type: 'checkbox', visible: 1, id: 910, rect: [96, 19, -1, -1], images: checks });
+    win.add({ type: 'textbox', visible: 1, id: 911, rect: [112, 18, 164, 32], text: 'Modern', size: 10, flags: 0x24 });
+    win.add({ type: 'checkbox', visible: 1, id: 920, rect: [166, 19, -1, -1], images: checks });
+    win.add({ type: 'textbox', visible: 1, id: 921, rect: [182, 18, 262, 32], text: 'Classic 1998', size: 10, flags: 0x24 });
+    // Info lines: keys above the rows, the note (or the extras) below them.
+    win.add({ type: 'textbox', visible: 1, id: 900, rect: [8, 5, 312, 17], text: '', size: 9, flags: 0x25 });
+    win.add({ type: 'textbox', visible: 1, id: 902, rect: [8, 144, 312, 157], text: '', size: 9, flags: 0x25 });
+    at(248, 144).textContent = '';   // the second line of "Replay voice over"
+    win.text(100, 'More');           // Gore: IDS_GORE_1, the original's default
+    for (const [id, x, w] of [[910, 94, 70], [920, 164, 100]]) {
+      const hot = el('div', 'fe-hot', win.el);
+      place(hot, x, 18, w, 14);
+      hot.addEventListener('pointerdown', (e) => { e.preventDefault(); menuSound.button(); setStyle(id === 910 ? 'modern' : 'classic'); });
+    }
+    win.get(910).addEventListener('pointerdown', () => setStyle('modern'));
+    win.get(920).addEventListener('pointerdown', () => setStyle('classic'));
+
     // Key cell id → action, with the rows' label positions (left column labels at x 10, right at x 248).
     const rows = [[1030, 'forward', 10, 46], [1031, 'run', 10, 60], [1032, 'back', 10, 74], [1033, 'left', 10, 88], [1034, 'right', 10, 102],
       [1035, 'jump', 10, 116], [1036, 'crouch', 10, 130], [1044, 'arm', 248, 32], [1043, 'throw', 248, 46], [1037, 'use', 248, 60],
       [1038, 'wrist', 248, 74], [1039, 'hand', 248, 88], [1040, 'grab', 248, 102], [1041, 'stow', 248, 116], [1042, 'replayVO', 248, 130]];
-    const byAction = Object.fromEntries(KEYMAP.map((k) => [k.action, k]));
-    const touchKeys = { forward: 'Left stick', back: 'Left stick', left: 'Left stick', right: 'Left stick', run: 'Stick to edge', jump: 'JUMP', use: 'FIRE', grab: 'GRAB' };
-    // The Invert Mouse row (nothing to invert in the remake) becomes the info line.
-    win.show(102, false);
-    at(80, 18)?.remove();
-    for (const h of win.el.querySelectorAll('.fe-hot')) if (parseFloat(h.style.top) === 18) h.remove();
-    win.add({ type: 'textbox', visible: 1, id: 900, rect: [8, 5, 312, 31], text: '', size: 9, flags: 0x15 });
-    const idle = TOUCH ? 'Right stick looks around · II pauses'
-      : `Also: ${['turnLeft', 'turnRight', 'reach', 'drop'].map((a) => `${keyNames(byAction[a]?.codes)} ${byAction[a]?.label.toLowerCase()}`).join(' · ')}`;
-    win.text(900, idle);
-    at(248, 144).textContent = '';   // the second line of "Replay voice over"
-    win.text(100, 'More');   // Gore: IDS_GORE_1, the original's default
-    for (const [id, action, lx, ly] of rows) {
-      const k = byAction[action];
-      if (!k) continue;
-      const label = at(lx, ly);
-      if (label) label.textContent = action === 'replayVO' ? 'Replay VO' : k.label.replace(/ \(hold\)$/, '');
-      const keys = TOUCH ? touchKeys[action] || '' : keyNames(k.codes);
-      win.text(id, keys);
+    // The modern hand (modernhand.js) re-uses the hand rows for look-and-click.
+    const MODERN = {
+      hand: { label: 'Pick up / use', keys: 'Left mouse', note: 'Look at a thing and click: pick it up, press it or open it; click again to drop. Hold and move the view to drag doors.' },
+      grab: { label: 'Turn freely (hold)', keys: 'Right mouse', note: 'Hold the right button and move the mouse to turn what she holds; the view stays still.' },
+      wrist: { label: 'Turn held', keys: 'Wheel', note: 'The wheel turns what she holds about the vertical.' },
+      arm: { label: '', keys: '' },
+    };
+    const TOUCH_KEYS = {
+      modern: { forward: 'Left stick', back: 'Left stick', left: 'Left stick', right: 'Left stick', run: 'Stick to edge', jump: 'JUMP', use: 'FIRE',
+        crouch: 'CROUCH', throw: 'THROW', stow: 'STOW', hand: 'Tap the view', grab: 'Drag', wrist: 'Two-finger twist' },
+      classic: { forward: 'Left stick', back: 'Left stick', left: 'Left stick', right: 'Left stick', run: 'Stick to edge', jump: 'JUMP', use: 'FIRE',
+        crouch: 'CROUCH', throw: 'THROW', stow: 'STOW', hand: 'HAND + R stick', grab: 'GRAB', wrist: 'ROTATE + R stick', arm: '' },
+    };
+    const TOUCH_LABELS = { modern: { hand: 'Pick up / drop', grab: 'Move held', wrist: 'Turn held' }, classic: {} };
+    const TOUCH_NOTES = {
+      modern: { hand: 'Tap a thing to pick it up or use it; tap again to drop it.', grab: 'While she holds something, drag a finger to move it.' },
+      classic: { hand: 'HAND switches the right stick from looking to moving her hand.', wrist: 'Hold ROTATE: the right stick turns her wrist.' },
+    };
+    const idle = () => (TOUCH ? 'Right stick looks around · II pauses'
+      : `Also: ${['turnLeft', 'turnRight', 'reach', 'drop'].filter((a) => !(style === 'modern' && a === 'reach'))
+        .map((a) => `${keyNames(byAction[a]?.codes)} ${byAction[a]?.label.toLowerCase()}`).join(' · ')}`);
+    const idleTop = () => (style === 'modern' ? 'Modern hand: look at a thing and click' : 'Classic hand: the mouse moves her hand, as in 1998');
+
+    const info = new Map();   // key cell id → [top line, bottom line]
+    const fill = () => {
+      win.check(910, style === 'modern');
+      win.check(920, style === 'classic');
+      for (const [id, action, lx, ly] of rows) {
+        const k = byAction[action];
+        if (!k) continue;
+        const m = !TOUCH && style === 'modern' ? MODERN[action] : null;
+        let label = m ? m.label : k.label;
+        if (TOUCH && TOUCH_LABELS[style][action]) label = TOUCH_LABELS[style][action];
+        const keys = TOUCH ? TOUCH_KEYS[style][action] || '' : m ? m.keys : keyNames(k.codes);
+        const cellLabel = action === 'replayVO' ? 'Replay VO' : label.replace(/ \(hold\)$/, '');
+        const lab = at(lx, ly);
+        if (lab) lab.textContent = cellLabel;
+        win.text(id, keys);
+        const note = TOUCH ? TOUCH_NOTES[style][action] || '' : m ? m.note || '' : k.note ? k.note[0].toUpperCase() + k.note.slice(1) : '';
+        const top = !label ? '' : TOUCH ? `${label}: ${keys || 'not on touch'}`
+          : `${label}: ${keys || '—'}${k.original && !m ? `   (original: ${k.original})` : ''}`;
+        info.set(id, [top, note]);
+      }
+      win.text(900, idleTop());
+      win.text(902, idle());
+    };
+    const setStyle = (s) => { style = s; fill(); };
+    fill();
+    for (const [id] of rows) {
       const cell = win.get(id);
-      const info = TOUCH ? `${k.label}: ${keys || 'not on touch'}`
-        : `${k.label}: ${keys}${k.original ? ` — original: ${k.original}` : ''}${k.note ? `. ${k.note[0].toUpperCase()}${k.note.slice(1)}` : ''}`;
       const cy = parseFloat(cell.style.top);
       const hot = [...win.el.querySelectorAll('.fe-hot')].find((h) => Math.abs(parseFloat(h.style.top) - cy) < 2
         && parseFloat(h.style.left) <= parseFloat(cell.style.left) && parseFloat(h.style.left) + parseFloat(h.style.width) >= parseFloat(cell.style.left) + 10);
       if (!hot) continue;
-      hot.addEventListener('pointerenter', () => win.text(900, info));
-      hot.addEventListener('pointerdown', () => win.text(900, info));
-      hot.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') win.text(900, idle); });
+      const show = () => { const [t, n] = info.get(id) || []; if (!t) return; win.text(900, t); win.text(902, n || idle()); };
+      hot.addEventListener('pointerenter', show);
+      hot.addEventListener('pointerdown', show);
+      hot.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') { win.text(900, idleTop()); win.text(902, idle()); } });
     }
-    this.push(win, { onEscape: () => this.pop(win) });
+    this.push(win, { onEscape: () => win.onButton(ID.CANCEL) });
   }
 
   // ------------------------------------------------------------ the loader
@@ -803,21 +902,23 @@ class FrontEnd {
     win.add({ type: 'textbox', visible: 1, id: 102, rect: [0, 15, 320, 40], text: IDS_LOADING_LEVEL, size: 14, flags: 0x25 });
     this.push(win, { kind: 'screen' });
 
-    let shown = 0, copy = 0, raf = 0;
-    const tick = () => {
-      // Phases from main.js; the bar creeps within each so it never sits still.
-      const target = [0.55, 0.7, 0.82, 0.93, 0.97, 1][this.phase];
-      shown += (target - shown) * 0.04;
-      copy = Math.max(copy, 1 - Math.exp(-this.fetched / 60));
-      win.setProgress(100, this.ui ? 1 : shown);
-      win.setProgress(101, this.ui ? 1 : copy);
-      raf = requestAnimationFrame(tick);
-    };
-    tick();
+    // Each of main.js's phases sets the bar gliding towards the next milestone; the glide
+    // is a CSS transition, so it carries on through the long synchronous steps (shader
+    // compiles, terrain baking, the physics build) when no script can run.
+    const MILESTONE = [0.45, 0.6, 0.72, 0.8, 0.95, 0.98, 1];
+    const GLIDE = [20, 12, 15, 20, 40, 5, 0.3];
+    let phase = -1, copy = 0;
+    win.get(102).classList.add('fe-blink');
+    const poll = setInterval(() => {
+      if (this.phase !== phase) { phase = this.phase; win.setProgress(100, MILESTONE[phase], GLIDE[phase]); }
+      const c = phase >= 1 ? 1 : 1 - Math.exp(-this.fetched / 60);
+      if (c > copy + 0.005) { copy = c; win.setProgress(101, c, 1.5); }
+    }, 150);
     await this.whenReady();
-    await new Promise((r) => setTimeout(r, 250));
-    cancelAnimationFrame(raf);
-    win.setProgress(100, 1); win.setProgress(101, 1);
+    clearInterval(poll);
+    win.setProgress(100, 1, 0.25); win.setProgress(101, 1, 0.25);
+    await new Promise((r) => setTimeout(r, 300));
+    win.get(102).classList.remove('fe-blink');
 
     const active = navigator.userActivation ? navigator.userActivation.isActive : false;
     if (!(entered && (active || TOUCH))) {
