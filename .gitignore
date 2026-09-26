@@ -3,3 +3,4 @@ dist/
 ref/
 public/levels/
 __pycache__/
+public/levels/*/hd/

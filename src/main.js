@@ -2,7 +2,7 @@
 // (converted by tools/convert_level.py) rendered with three.js, playable with
 // keyboard and mouse or with touch sticks on a phone.
 import * as THREE from 'three';
-import { loadLevel } from './level.js';
+import { loadLevel, textureUrl } from './level.js';
 import { Input } from './input.js';
 import { paintTerrain } from './terrainPaint.js';
 import { buildCollider, moveCapsule } from './collision.js';
@@ -62,7 +62,7 @@ const skyInst = info.instances.find((i) => i.cls === 'CSky');
 const skyTex = skyInst && info.models[skyInst.model]?.parts[0]?.texture;
 let skyPlane = null;
 if (skyTex) {
-  const tex = new THREE.TextureLoader().load(`levels/${LEVEL}/tex/${skyTex}.png`);
+  const tex = new THREE.TextureLoader().load(textureUrl(`levels/${LEVEL}`, skyTex));
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
   tex.repeat.set(24, 24);
@@ -106,7 +106,15 @@ function groundAt(x, y) {
   return world.worldToLocal(hit.point.clone()).z;
 }
 
-window.__player = player;   // for automated tests
+// Test hook: ?at=x,y[,yaw] starts somewhere else (ground height found on arrival).
+const at = new URLSearchParams(location.search).get('at');
+world.updateMatrixWorld(true);
+if (at) {
+  const [x, y, yaw] = at.split(',').map(Number);
+  player.pos.set(x, y, groundAt(x, y) + 0.5);
+  if (!Number.isNaN(yaw)) player.yaw = yaw;
+}
+window.__player = player; window.__scene = scene;   // for automated tests
 const input = new Input(renderer.domElement);
 hud.textContent = input.touch ? 'Left stick to walk · right stick to look' : 'Click to look around · WASD to walk · Shift to run · Space to jump';
 setTimeout(() => (hud.textContent = ''), 6000);

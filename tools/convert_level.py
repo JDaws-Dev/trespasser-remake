@@ -146,6 +146,40 @@ def read_mesh(g, h):
     return dict(material=seh_material, pts=pts, verts=verts, groups=groups,
                 default=default_col if need_default else None, pivot=pivot)
 
+def read_raw_mesh(g, h_geo, h_map):
+    """An unoptimised mesh (CGroffGeometry, 'type 1'): used for jointed meshes such as
+    the dinosaurs. Texture coordinates and face materials live in the mapping section."""
+    d = g.by_handle[h_geo][2]
+    vc, fc, nc, wc = struct.unpack_from('<4I', d, 12)
+    if 40 + vc * 12 + fc * 24 + nc * 12 + wc * 12 != len(d) or nc != fc * 3:
+        return None
+    off = 40
+    pts = [struct.unpack_from('<3f', d, off + 12 * i) for i in range(vc)]; off += vc * 12
+    corners = struct.unpack_from('<%dI' % (fc * 3), d, off); off += fc * 12
+    off += fc * 12                       # face normals
+    normals = [struct.unpack_from('<3f', d, off + 12 * i) for i in range(nc)]; off += nc * 12
+    wrap = [struct.unpack_from('<3f', d, off + 12 * i) for i in range(wc)]
+    material, tfaces, face_mat, tverts = 0, None, [0] * fc, []
+    if h_map in g.by_handle:
+        m = g.by_handle[h_map][2]
+        material = struct.unpack_from('<I', m, 0)[0]
+        if len(m) > 4:
+            tvc, tfc = struct.unpack_from('<2I', m, 4)
+            o = 12
+            tverts = [struct.unpack_from('<2f', m, o + 8 * i) for i in range(tvc)]; o += tvc * 8
+            tfaces = struct.unpack_from('<%dI' % (tfc * 3), m, o); o += tfc * 12
+            face_mat = list(struct.unpack_from('<%dI' % tfc, m, o))
+    verts, groups = [], {}
+    for f in range(fc):
+        tri = []
+        for k in range(3):
+            c = f * 3 + k
+            uv = tverts[tfaces[c]] if tfaces and tfaces[c] < len(tverts) else (0.0, 0.0)
+            verts.append((corners[c], normals[c], uv))
+            tri.append(len(verts) - 1)
+        groups.setdefault(face_mat[f] if f < len(face_mat) else 0, []).append(tuple(tri))
+    return dict(material=material, pts=pts, verts=verts, groups=groups, default=None, pivot=None, wrap=wrap)
+
 def euler_matrix(rx, ry, rz):
     """Engine rotation v * Rx * Ry * Rz (row vectors) as a column-major 3x3."""
     def rot(axis, a):
@@ -168,6 +202,10 @@ def convert(level):
     count = struct.unpack_from('<I', reg, 0)[0]
     models, instances, used_tex = {}, [], {}
     player_start = None
+    # Copies of an animal (RaptorA01, RaptorA02...) carry the prototype's geometry but an
+    # empty material; they take the prototype's textured model.
+    import hashlib
+    textured_by_geo = {}
     values = read_value_table(g)
     # Objects that exist for game logic only are never drawn.
     LOGIC = {'AI Command', 'CLocationTrigger', 'CMagnet', 'CStartTrigger', 'Player Settings', 'CObjectTrigger',
@@ -192,8 +230,18 @@ def convert(level):
             continue
         diffuse = props.get('Diffuse', 1.0)
         model_key = (seh_geo, diffuse)
+        if klass == 'CAnimal':
+            geo_hash = hashlib.md5(g.by_handle[seh_geo][2]).hexdigest()
+            mat_names = read_material(g, struct.unpack_from('<I', g.by_handle[seh_map][2], 0)[0]) if seh_map in g.by_handle else []
+            if not any(n for n, _b, _c in mat_names) and geo_hash in textured_by_geo:
+                model_key = textured_by_geo[geo_hash]
+            elif any(n for n, _b, _c in mat_names):
+                textured_by_geo.setdefault(geo_hash, model_key)
         if model_key not in models:
             mesh = read_mesh(g, seh_geo)
+            # Raw meshes are the jointed ones: only animals are drawn from those.
+            if mesh is None and klass == 'CAnimal':
+                mesh = read_raw_mesh(g, seh_geo, seh_map)
             if mesh is None:
                 models[model_key] = None
                 continue
@@ -224,6 +272,9 @@ def convert(level):
                 parts.append(dict(offset=start, count=len(pos) // 3, texture=('%08x' % tex_id) if tex_id is not None else None,
                                   colour=colour))
             models[model_key] = dict(parts=parts)
+        # '$' objects without textures are physics and shadow shapes, never seen.
+        if models.get(model_key) and name.startswith('$') and all(p['texture'] is None for p in models[model_key]['parts']):
+            continue
         if models.get(model_key):
             m = euler_matrix(rx, ry, rz)
             keep = {k: v for k, v in props.items() if isinstance(v, (bool, int, float, str))}

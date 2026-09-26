@@ -16,12 +16,21 @@ function loadTexture(url) {
   return tex;
 }
 
+// AI-upscaled versions of the original textures, where one has been made
+// (tools/install_hd.py). The original is the fallback.
+let hd = {};
+export function textureUrl(base, id) {
+  return hd[id] ? `${base}/hd/${id}.png` : `${base}/tex/${id}.png`;
+}
+
 export async function loadLevel(base, onProgress = () => {}) {
-  const [info, meshes, terrainBytes] = await Promise.all([
+  const [info, meshes, terrainBytes, hdList] = await Promise.all([
     fetch(`${base}/level.json`).then((r) => r.json()),
     fetch(`${base}/meshes.bin`).then((r) => r.arrayBuffer()),
     fetch(`${base}/terrain.bin`).then((r) => (r.ok ? r.arrayBuffer() : null)),
+    fetch(`${base}/hd.json`).then((r) => (r.ok ? r.json() : {})).catch(() => ({})),
   ]);
+  hd = hdList;
   onProgress('Building world…');
 
   const group = new THREE.Group();
@@ -35,7 +44,7 @@ export async function loadLevel(base, onProgress = () => {}) {
     if (part.texture) {
       let tex = textures.get(part.texture);
       if (!tex) {
-        tex = loadTexture(`${base}/tex/${part.texture}.png`);
+        tex = loadTexture(textureUrl(base, part.texture));
         textures.set(part.texture, tex);
       }
       // alphaTest keeps foliage cut-outs crisp without sorting transparent geometry.
@@ -115,6 +124,8 @@ export async function loadLevel(base, onProgress = () => {}) {
         mesh.setMatrixAt(i, m4);
       });
       mesh.computeBoundingSphere();
+      mesh.name = list[0].name;
+      mesh.userData.cls = list[0].cls;
       group.add(mesh);
     }
   }
