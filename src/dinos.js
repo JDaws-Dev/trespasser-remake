@@ -282,8 +282,27 @@ export class DinoAI {
     if (game.physics?.ragdoll(d)) return;   // tumbles as a body, knocked by the shot
     // Down on its side.
     const side = new THREE.Matrix4().makeRotationY(Math.PI / 2);
-    d.pos.z = game.groundAt(d.pos.x, d.pos.y) + d.radius * 0.6;
+    d.pos.z = this.floorUnder(d) + this.sideHalf(d);
     game.setInstanceMatrix(d.index, game.matrixFor(d.inst, d.pos, d.yaw, side));
+  }
+
+  // Lying on its side (rotated about its length) its lowest point is half its width
+  // below the centre.
+  sideHalf(d) { return Math.max(Math.abs(d.bounds.min.x), Math.abs(d.bounds.max.x)) * d.scale; }
+
+  // The floor or terrain under a standing animal.
+  floorUnder(d) {
+    const terrain = this.game.groundAt(d.pos.x, d.pos.y);
+    return this.groundUnder(d.pos.x, d.pos.y, Math.max(terrain, d.pos.z - d.foot) + 0.5) ?? terrain;
+  }
+
+  // Where the body's middle is now: walking, lying down or tumbling as a physics body
+  // (the drawn instance's origin; the models are centred on the body).
+  bodyCentre(d, out = new THREE.Vector3()) {
+    const ref = this.game.refs[d.index]?.[0];
+    if (!ref) return out.copy(d.pos);
+    ref.mesh.getMatrixAt(ref.i, _m);
+    return out.setFromMatrixPosition(_m);
   }
 
   // A gunshot (Gun.cpp:446 AlertAnimals): everything within `radius` of Anne notices her.
@@ -675,7 +694,7 @@ export class DinoAI {
     const side = _m.makeRotationY(Math.PI / 2);
     d.gait = 0;
     const z = d.pos.z;
-    d.pos.z = this.game.groundAt(d.pos.x, d.pos.y) + d.radius * 0.5;
+    d.pos.z = this.floorUnder(d) + this.sideHalf(d);
     this.game.setInstanceMatrix(d.index, this.game.matrixFor(d.inst, d.pos, d.yaw, side));
     d.pos.z = z;
     d.lying = true;
