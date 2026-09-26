@@ -16,6 +16,7 @@ const MAX_STEPS = 4;                  // per frame, so a slow frame never spiral
 const LIFT_MAX = 100;                 // kg: PlayerSettings.fMaxMassPickup in the original
 const REACH = 2.6;                    // metres from the eye
 const PLAYER_R = 0.3, PLAYER_H = 1.7;
+const ANNE_MASS = 55;                 // kg: what she presses on what she stands on
 const DENSITY = 0.1, FRICTION = 5, ELASTICITY = 0.2;
 const STATIC = 0x0002;                // collision group of the static world
 // The hand (PlayerSettings in Player.cpp): reach, angle limits, grab distance, throw.
@@ -285,6 +286,7 @@ export class Physics {
     this.stats = { bodies: this.entries.length, staticBoxes, staticTris: verts.length / 9, joints: this.joints.length };
     this.makeHand();
     this.swing = { stage: 0, t: 0, ax: 0, side: 1 };
+    this.pushScale = 4;           // SET_PHYSICS Push multiplier (see pushFrom)
     this.frame = 0;
     window.__physics = this;
     this.RayCtor = RAPIER.Ray; this.RAPIER = RAPIER;   // for tests
@@ -442,7 +444,7 @@ export class Physics {
   }
 
   // A named helper's placement ({pos:[x,y,z], rot:[[...]]}), e.g. an Emit* or TeleportDest*.
-  marker(name) { return this.markers[name] || null; }
+  marker(name) { return this.markers[name] || this.logic?.objects?.[name] || null; }   // colliders.json, else logic.json's placements
 
   // SET_PHYSICS Frozen:true: held still where it is (a fixed body) until unfrozen.
   freeze(name) {
@@ -482,7 +484,11 @@ export class Physics {
     let pos, dir;
     if (em.body) { const t = em.body.translation(); pos = new THREE.Vector3(t.x, t.y, t.z); dir = new THREE.Vector3(0, 1, 0).applyQuaternion(em.curQ); }
     else { pos = new THREE.Vector3(...em.pos); dir = new THREE.Vector3(em.rot[0][1], em.rot[1][1], em.rot[2][1]); }
-    return this.push(name, dir.multiplyScalar(push), pos);
+    // The original applied Push as momentum (CXob::ApplyImpulse: force for one 10 ms
+    // step, so Δv = Push / mass), but its boxes slid and rolled far more freely than
+    // Rapier's: at 1x the Ascent's rolling head stops 2.5 m short of the stairs it must
+    // reach. Scripted pushes are scaled by pushScale (4: the head reaches the stairs).
+    return this.push(name, dir.multiplyScalar(push * this.pushScale), pos);
   }
 
   // SET_PHYSICS X/Y/Z: set its velocity (m/s), e.g. the as2 elevator.
@@ -618,7 +624,18 @@ export class Physics {
     }
     player.pos.x += m.x; player.pos.y += m.y; player.pos.z += m.z;
     col.setTranslation({ x: player.pos.x, y: player.pos.y, z: player.pos.z + cz });
-    return this.cc.computedGrounded();
+    const grounded = this.cc.computedGrounded();
+    // Her weight on what she stands on (a trailer she walks onto slides off under her).
+    if (grounded) {
+      const hit = this.world.castRay(new RAPIER.Ray({ x: player.pos.x, y: player.pos.y, z: player.pos.z + 0.1 }, { x: 0, y: 0, z: -1 }),
+        0.4, true, undefined, undefined, col);
+      const b = hit?.collider.parent();
+      const e = b && this.byHandle.get(b.handle);
+      if (e && b.isDynamic() && !e.pinned && e !== this.held?.entry) {
+        b.applyImpulseAtPoint({ x: 0, y: 0, z: -ANNE_MASS * 9.81 * dt }, { x: player.pos.x, y: player.pos.y, z: player.pos.z + 0.1 - hit.timeOfImpact }, true);
+      }
+    }
+    return grounded;
   }
 
   // ---------------------------------------------------------------- hand
