@@ -19,7 +19,7 @@ const DRAG_FORCE = 900;          // N at the grab point (as the classic hand)
 const PRESS_TIME = 0.75;         // s: reach out, hold, draw back
 const STEP = 1 / 60;
 
-const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _q = new THREE.Quaternion(), _m = new THREE.Matrix4();
+const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _q = new THREE.Quaternion(), _m = new THREE.Matrix4(), _m2 = new THREE.Matrix4();
 
 export class ModernHand {
   constructor(physics, game) {
@@ -338,17 +338,28 @@ export class ModernHand {
 
   placeGlow() {
     const e = this.glowFor, parts = this.ph.refs[e.index] || [];
-    // Rim width in metres: 6 mm, plus 3 mm for every metre away.
+    // Rim width in metres: 6 mm, plus 3 mm for every metre away, and never under 2
+    // pixels on screen (so a small rock shows it too).
     const dist = this.target?.dist ?? 1;
-    const w = 0.006 + 0.003 * dist, sc = e.scale || 1, c = this.glowC, h = this.glowH;
+    const cam = this.game.camera;
+    const px = cam ? (2 * Math.tan(THREE.MathUtils.degToRad(cam.fov) / 2) * dist) / Math.max(1, innerHeight) : 0;
+    const w = Math.max(0.006 + 0.003 * dist, 2 * px), sc = e.scale || 1, c = this.glowC, h = this.glowH;
     const grow = _m.makeTranslation(c.x, c.y, c.z)
       .multiply(new THREE.Matrix4().makeScale(1 + w / (h.x * sc), 1 + w / (h.y * sc), 1 + w / (h.z * sc)))
       .multiply(new THREE.Matrix4().makeTranslation(-c.x, -c.y, -c.z));
+    // The rim is also brought toward her eye (along her line of sight, which leaves it
+    // where it is on screen) by most of the object's thinnest half, so it is not lost in
+    // the ground a half-buried rock sits in; its back faces stay behind the object's front.
+    const eye = this.ph.eyeRay(this.ph.player || { pos: new THREE.Vector3(), yaw: 0, pitch: 0 }).origin;
+    const shift = Math.min(0.6 * Math.min(h.x, h.y, h.z) * sc, 0.02);
     parts.forEach(({ mesh, i }, k) => {
       const rim = this.glow.children[2 * k], tint = this.glow.children[2 * k + 1];
       if (!rim) return;
       mesh.getMatrixAt(i, tint.matrix);
       rim.matrix.copy(tint.matrix).multiply(grow);
+      const at = new THREE.Vector3().setFromMatrixPosition(rim.matrix);
+      const toEye = eye.clone().sub(at).setLength(shift);
+      rim.matrix.premultiply(_m2.makeTranslation(toEye.x, toEye.y, toEye.z));
     });
   }
 }
