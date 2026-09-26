@@ -393,13 +393,12 @@ export class Blood {
 
     // Wounds, carried on the animal.
     this.wounds = instanced(quad, wet(atlas.map, atlas.bump, { polygonOffsetFactor: -4, polygonOffsetUnits: -8 }), CAP.wounds, world, 4);
-    this.woundRec = Array.from({ length: CAP.wounds }, () => ({ on: false, dino: null, local: new THREE.Matrix4(), size: 0, born: 0, drip: 0, trail: 0 }));
+    this.woundRec = Array.from({ length: CAP.wounds }, () => ({ on: false, dino: null, local: new THREE.Matrix4(), clot: new THREE.Matrix4(), size: 0, born: 0, drip: 0, trail: 0 }));
     this.woundNext = 0;
-    // ...and a raised clot of blood in each, so the wound shows from the side as well
-    // as face on.
+    // ...and a thin glossy bead of blood in each, so the wound catches the light from
+    // the side as well as face on.
     this.clots = instanced(new THREE.SphereGeometry(1, 8, 6), dropMat, CAP.wounds, world);
     for (let i = 0; i < CAP.wounds; i++) this.clots.geometry.attributes.aFx.setXY(i, 0, 1);
-    this.clotLocal = new THREE.Matrix4().makeTranslation(0, 0, -0.06).multiply(new THREE.Matrix4().makeScale(0.3, 0.3, 0.16));
 
     // Pools spreading under the dead.
     // (The pool texture is a single image, not the atlas.)
@@ -447,8 +446,16 @@ export class Blood {
   }
 
   // Dinosaur d has just died (already laid on its side).
+  // The middle of the animal's body, wherever it is drawn (standing, laid down or
+  // tumbling): the dinosaur AI's own answer if it has one, else its instance origin,
+  // which is the body's centre (the models are body-centred).
+  bodyCentre(d) {
+    const c = this.game.ai?.bodyCentre?.(d);
+    return c ? c.clone() : new THREE.Vector3().setFromMatrixPosition(this.dinoFrame(d, _m2));
+  }
+
   kill(d) {
-    const c = new THREE.Vector3(d.pos.x, d.pos.y, d.pos.z + d.radius * 0.2);
+    const c = this.bodyCentre(d);
     const big = Math.min(3, d.radius / 1.2);
     for (let i = 0; i < 5; i++) {
       const dir = new THREE.Vector3(rand(-1, 1), rand(-1, 1), rand(0.3, 1.2)).normalize();
@@ -635,19 +642,19 @@ export class Blood {
     }
     _m.compose(_v.copy(point).addScaledVector(normal, 0.03), _q, _s.setScalar(size));
     r.local.copy(this.dinoFrame(d, _m2.clone()).invert()).multiply(_m);
+    // The bead: centred on the skin (the smear floats 3 cm off it), under a centimetre proud.
+    r.clot.copy(r.local).multiply(_m2.makeTranslation(0, 0, -0.03 / size)).multiply(_m.makeScale(0.2, 0.2, 0.008 / size));
     this.wounds.geometry.attributes.aFx.setXY(i, 3, 1);
     this.wounds.geometry.attributes.aFx.needsUpdate = true;
   }
 
   addPool(d) {
-    const s = this.below(new THREE.Vector3(d.pos.x, d.pos.y, d.pos.z + 2), 10);
+    const c = this.bodyCentre(d), s = this.below(c.setZ(c.z + 2), 10 + (d.foot || 0));
     if (!s) return;
     const i = this.poolNext; this.poolNext = (this.poolNext + 1) % CAP.pools;
     const r = this.poolRec[i];
     r.on = true; r.born = this.time; r.r = Math.min(9, d.radius * 2.2); r.dino = d;
-    // Under the body's middle, not its feet.
-    const fwd = _v.set(-Math.sin(d.yaw), Math.cos(d.yaw), 0).multiplyScalar(d.radius * 0.1);
-    r.pos.copy(s.point).add(fwd).addScaledVector(s.normal, 0.01);
+    r.pos.copy(s.point).addScaledVector(s.normal, 0.01);
     decalQuat(s.normal, null, r.q);
     this.pools.geometry.attributes.aFx.setXY(i, 0, 1);
     this.pools.geometry.attributes.aFx.needsUpdate = true;
@@ -756,7 +763,7 @@ export class Blood {
       const d = r.dino;
       this.dinoFrame(d, _m).multiply(r.local);
       this.wounds.setMatrixAt(i, _m);
-      this.clots.setMatrixAt(i, _m2.multiplyMatrices(_m, this.clotLocal));
+      this.clots.setMatrixAt(i, _m2.multiplyMatrices(this.dinoFrame(d, _m2), r.clot));
       moved = true;
       // Fresh wounds bleed: drops run off and fall, leaving a trail behind the animal.
       const age = this.time - r.born;
@@ -785,8 +792,7 @@ export class Blood {
       if (age > 40) continue;   // spread as far as it goes
       // While a tumbling body settles, the pool gathers under where it comes to rest.
       if (age < 3 && r.dino) {
-        _v.setFromMatrixPosition(this.dinoFrame(r.dino, _m2));
-        const s = this.below(_v.setZ(_v.z + 2), 10);
+        const c = this.bodyCentre(r.dino), s = this.below(c.setZ(c.z + 2), 10 + (r.dino.foot || 0));
         if (s) r.pos.copy(s.point).addScaledVector(s.normal, 0.01);
       }
       const k = age <= 0 ? 0.001 : 1 - Math.exp(-age / 9);
