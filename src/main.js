@@ -9,6 +9,7 @@ import { buildCollider, moveCapsule } from './collision.js';
 import { Game } from './game.js';
 import { Audio } from './audio.js';
 import { Atmosphere, setupRenderer } from './atmosphere.js';
+import { createPost } from './post.js';
 
 const LEVEL = new URLSearchParams(location.search).get('level') || 'be';
 const EYE_HEIGHT = 1.6;       // metres
@@ -33,9 +34,11 @@ scene.add(world);
 const camera = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.05, 4000);
 scene.add(camera);
 const atmosphere = new Atmosphere({ renderer, scene, camera, world, phone: PHONE });
+const post = createPost({ renderer, scene, camera, phone: PHONE });
 
 addEventListener('resize', () => {
   renderer.setSize(innerWidth, innerHeight);
+  post.setSize(innerWidth, innerHeight);
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
 });
@@ -57,9 +60,9 @@ if (skyTex) {
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
   tex.repeat.set(24, 24);
   tex.anisotropy = 8;
-  // Drawn over the sky dome, thinning towards the horizon where the dome and haze take over.
+  // Drawn over the sky dome; the haze takes over towards the horizon, where the dome shows below it.
   skyPlane = new THREE.Mesh(new THREE.PlaneGeometry(9000, 9000),
-    new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide, fog: true, depthWrite: false, transparent: true, opacity: 0.9 }));
+    new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide, fog: true, depthWrite: false }));
   skyPlane.renderOrder = -1;
   world.add(skyPlane);
 }
@@ -115,7 +118,7 @@ window.__player = player; window.__scene = scene; window.__renderer = renderer; 
 const input = new Input(renderer.domElement);
 const audio = new Audio(`levels/${LEVEL}`);
 const game = new Game({ scene, world, camera, info, refs, collider, groundAt, hud, level: LEVEL, audio });
-game.showHint(input.touch ? 'Left stick walks, right stick looks. GRAB picks up a gun, FIRE shoots.' : 'Click to look · WASD walk · Shift run · E pick up · click to fire · G drop', 7);
+game.showHint(input.touch ? 'Left stick walks, right stick looks. GRAB picks up a gun, FIRE shoots.' : 'WASD walk · Shift run · Space jump · E pick up · click to fire · G drop · Esc menu', 7);
 window.__game = game;
 
 const clock = new THREE.Clock();
@@ -157,5 +160,5 @@ renderer.setAnimationLoop(() => {
   atmosphere.update(dt);
   audio.updateListener(new THREE.Vector3(player.pos.x, player.pos.y, player.pos.z + EYE_HEIGHT),
     new THREE.Vector3(-Math.sin(player.yaw), Math.cos(player.yaw), 0), new THREE.Vector3(0, 0, 1));
-  renderer.render(scene, camera);
+  post.render(dt);
 });
