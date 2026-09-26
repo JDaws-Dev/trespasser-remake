@@ -69,8 +69,11 @@
   .fe-slider { cursor: pointer; touch-action: none; }
   .fe-slider .thumb { position: absolute; top: 0; }
   .fe-progress i { display: block; height: 100%; }
-  #fe-video { position: fixed; inset: 0; z-index: 30; background: #000; display: grid; place-items: center; cursor: pointer; }
-  #fe-video video { width: 100%; height: 100%; object-fit: contain; }
+  #fe-video { position: fixed; inset: 0; z-index: 30; background: #000; cursor: pointer; }
+  /* 640x348 at 15 fps and 256 colours: no bigger than twice native (a 1280x960 box), smooth-scaled.
+     On a phone it fills the screen's width (or height, whichever fits first). */
+  #fe-video video { position: absolute; inset: 0; margin: auto; width: 100%; height: 100%; max-width: 1280px; max-height: 960px; object-fit: contain; image-rendering: auto; }
+  @media (pointer: coarse) { #fe-video video { max-width: none; max-height: none; } }
   .stick { position: fixed; bottom: max(24px, env(safe-area-inset-bottom)); width: 132px; height: 132px; border-radius: 50%;
            border: 2px solid rgba(255,255,255,.25); background: rgba(0,0,0,.15); display: none; }
   .stick i { position: absolute; left: 41px; top: 41px; width: 50px; height: 50px; border-radius: 50%; background: rgba(255,255,255,.35); }

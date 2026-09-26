@@ -9,8 +9,8 @@
   then the type's own fields) into public/menu/layouts.json for src/frontend.js.
 - Menu.tpa's samples (the menu loop, the T-rex footstep button click and the
   thirteen distant dinosaurs / birds played at random) become .mp3.
-- The Smacker cutscenes become H.264 + AAC .mp4 (iOS Safari plays these inline)
-  plus a VP9 .webm fallback for Chromium builds without H.264.
+- The Smacker cutscenes become H.264 + AAC .mp4 (iOS Safari plays these inline;
+  Chrome and Firefox play them too).
 """
 import json, os, re, shlex, subprocess, sys, wave
 from PIL import Image
@@ -188,7 +188,6 @@ def main(args):
     for v in VIDEOS:
         src = os.path.join(MENU, v + '.smk')
         mp4 = os.path.join(OUT, 'video', v + '.mp4')
-        webm = os.path.join(OUT, 'video', v + '.webm')
         # newgame.smk is stored line-doubled (640x172; the Smacker SDK reports and shows it
         # 344 high); the others are 640x348 letterboxed frames. Height doubled where halved.
         h = int(subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=height',
@@ -198,9 +197,6 @@ def main(args):
             run(['ffmpeg', '-loglevel', 'error', '-y', '-i', src, '-vf', vf, '-c:v', 'libx264', '-profile:v', 'high', '-pix_fmt', 'yuv420p',
                  '-preset', 'slow', '-b:v', '2500k', '-maxrate', '3000k', '-bufsize', '5000k',
                  '-c:a', 'aac', '-b:a', '128k', '-ac', '2', '-movflags', '+faststart', mp4])
-        if not os.path.exists(webm) or '--force' in args:
-            run(['ffmpeg', '-loglevel', 'error', '-y', '-i', src, '-vf', vf, '-c:v', 'libvpx-vp9', '-crf', '38', '-b:v', '0', '-deadline', 'good',
-                 '-cpu-used', '5', '-row-mt', '1', '-c:a', 'libopus', '-b:a', '96k', webm])
     print('videos done')
 
 

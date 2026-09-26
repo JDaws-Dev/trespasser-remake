@@ -521,8 +521,8 @@ class FrontEnd {
 
   // ------------------------------------------------------------ cutscenes
 
-  // A Smacker cutscene, transcoded to H.264 (WebM where H.264 is missing), letterboxed
-  // on black. A click, tap, Esc, Space or Enter skips it (video.cpp).
+  // A Smacker cutscene, transcoded to H.264 MP4 (every current browser plays it),
+  // letterboxed on black. A click, tap, Esc, Space or Enter skips it (video.cpp).
   video(name) {
     const prev = this.mode;
     this.mode = 'video';
@@ -534,8 +534,7 @@ class FrontEnd {
       v.setAttribute('playsinline', '');
       v.setAttribute('webkit-playsinline', '');
       v.preload = 'auto';
-      const mp4 = v.canPlayType('video/mp4; codecs="avc1.640028, mp4a.40.2"');
-      v.src = `${BASE}video/${name}.${mp4 ? 'mp4' : 'webm'}`;
+      v.src = `${BASE}video/${name}.mp4`;
       let done = false;
       const end = () => {
         if (done) return;
