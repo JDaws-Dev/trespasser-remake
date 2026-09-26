@@ -43,12 +43,30 @@ const rq = (q) => ({ x: q.x, y: q.y, z: q.z, w: q.w });
 export async function createPhysics(opts) {
   await RAPIER.init();
   const load = (f) => fetch(`levels/${opts.level}/${f}`).then((r) => (r.ok ? r.json() : null)).catch(() => null);
-  const [extra, colliders] = await Promise.all([load('physics.json'), load('colliders.json')]);
-  return new Physics({ ...opts, extra: extra || { boxes: {}, magnets: [] }, colliders: colliders || { solids: [], markers: {} } });
+  const [extra, colliders, logic] = await Promise.all([load('physics.json'), load('colliders.json'), load('logic.json')]);
+  return new Physics({ ...opts, extra: extra || { boxes: {}, magnets: [] }, colliders: colliders || { solids: [], markers: {} },
+    logicTargets: logicTargets(logic) });
+}
+
+// Objects the level's triggers act on physically (SET_PHYSICS / MAGNET targets, collision
+// trigger elements): the vault locks and hand reader, card readers, buttons. They need
+// bodies even when the level has them static (then frozen until acted on).
+function logicTargets(logic) {
+  const out = new Set();
+  const walk = (o, type) => {
+    if (Array.isArray(o)) { for (const v of o) walk(v, type); return; }
+    if (!o || typeof o !== 'object') return;
+    const t = o.type || type;
+    if (t === 'SET_PHYSICS' || t === 'MAGNET') for (const k of ['Target', 'MasterObject', 'SlaveObject']) if (typeof o[k] === 'string') out.add(o[k]);
+    for (const k of ['Element1', 'Element2']) if (typeof o[k] === 'string') out.add(o[k]);
+    for (const v of Object.values(o)) walk(v, t);
+  };
+  walk(logic?.triggers, null);
+  return out;
 }
 
 export class Physics {
-  constructor({ info, terrain, partGeoms, refs, extra, colliders }) {
+  constructor({ info, terrain, partGeoms, refs, extra, colliders, logicTargets = new Set() }) {
     Object.assign(this, { info, refs, partGeoms });
     this.world = new RAPIER.World({ x: 0, y: 0, z: -9.81 });
     this.world.timestep = STEP;
@@ -82,6 +100,7 @@ export class Physics {
     for (const inst of info.instances) {
       const p = inst.props || {};
       if (p.Tangible !== true || p.Moveable === true) continue;
+      if (logicTargets.has(inst.name) && refs[inst.index]) continue;   // a (frozen) body instead
       if (inst.cls === 'CTerrainObj' || inst.cls === 'CEntityWater' || inst.cls === 'CAnimal') continue;
       const sub = this.boxes[inst.name];
       if (sub) {
@@ -114,6 +133,12 @@ export class Physics {
     // --- Invisible solids (never drawn): the F* walls and floors and Baker* blockers
     // that keep Anne out of the sea and up on walkways. Boxes, as the original.
     for (const so of colliders.solids) {
+      if (logicTargets.has(so.name)) {
+        // An invisible target (a card reader's box, a keypad): a frozen body, never drawn.
+        this.addBody({ name: so.name, pos: so.pos, rot: so.rot, scale: so.scale, props: { Frozen: true, Tangible: true }, index: `solid:${so.name}`,
+          shapes: so.compound && this.boxes[so.name] ? null : [{ pos: so.c, rot: null, half: so.half }] });
+        continue;
+      }
       _m.set(so.rot[0][0], so.rot[0][1], so.rot[0][2], 0, so.rot[1][0], so.rot[1][1], so.rot[1][2], 0,
              so.rot[2][0], so.rot[2][1], so.rot[2][2], 0, 0, 0, 0, 1);
       const q = new THREE.Quaternion().setFromRotationMatrix(_m);
@@ -131,7 +156,10 @@ export class Physics {
     // --- Dynamic objects: everything Moveable and Tangible that is drawn.
     for (const inst of info.instances) {
       const p = inst.props || {};
-      if (p.Moveable !== true || p.Tangible !== true || !refs[inst.index]) continue;
+      const target = logicTargets.has(inst.name) && p.Tangible === true;
+      if (!target && (p.Moveable !== true || p.Tangible !== true)) continue;
+      if (!refs[inst.index]) continue;
+      if (target && p.Moveable !== true) { this.addBody({ ...inst, props: { ...p, Frozen: true } }); continue; }
       if (inst.cls === 'CAnimal') continue;
       this.addBody(inst);
     }
@@ -199,7 +227,8 @@ export class Physics {
       .setTranslation(...inst.pos).setRotation(rq(q)).setCcdEnabled(true)
       .setLinearDamping(0.05).setAngularDamping(0.2));
     // Boxes in the body's frame: the compound's own, else the mesh extents.
-    let shapes = this.boxes[inst.name]?.map((b) => ({ c: _v.fromArray(b.pos).multiplyScalar(s).clone(), q: boxQuat(b), h: b.half.map((h) => h * s) }));
+    const boxes = inst.shapes || this.boxes[inst.name];
+    let shapes = boxes?.map((b) => ({ c: _v.fromArray(b.pos).multiplyScalar(s).clone(), q: b.rot ? boxQuat(b) : new THREE.Quaternion(), h: b.half.map((h) => h * s) }));
     if (!shapes) {
       const bb = this.modelBounds(inst.model);
       shapes = [{ c: bb.getCenter(new THREE.Vector3()).multiplyScalar(s), q: new THREE.Quaternion(),
@@ -387,6 +416,7 @@ export class Physics {
     if (this.hand.holding === e) this.handRelease();
     if (this.held?.entry === e) this.release();
     this.joints.filter((j) => j.joint && j.slave === e && !j.master).forEach((j) => this.removeJoint(j));
+    if (e.frozen) { e.body.setBodyType(RAPIER.RigidBodyType.Dynamic, true); e.frozen = false; }
     if (spec.enable === false) { e.body.wakeUp(); this.live.add(e); return true; }
     const R = new THREE.Matrix4().makeRotationFromQuaternion(e.curQ).elements;
     this.addMagnet({
