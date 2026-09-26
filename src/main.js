@@ -149,7 +149,13 @@ const frame = () => {
   // she holds, and on touch GRAB clicks on what is under the crosshair.
   const hc = handControls.poll(move);
   const modern = physics.handStyle === 'modern';
-  if (modern) { if (move.touch && move.pickup) hc.click = true; move.pickup = false; }
+  if (modern) {
+    if (move.touch && move.pickup) hc.click = true;
+    move.pickup = false;
+    // Left click fires the gun in her hand (held: automatics keep firing), unless the
+    // crosshair is on something within reach to pick up, press or drag.
+    if (hc.hand && physics.modern.wantsFire()) { move.fire = true; hc.click = false; }
+  }
   physics.setArm(!modern && hc.hand, player);
   game.update(dt, player, move);
 

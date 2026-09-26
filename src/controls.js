@@ -2,6 +2,7 @@
 // Defaults are the original's (Lib/Sys/RegInit.cpp SetKeyMappingToDefault), with WASD
 // kept for walking and a few browser-safe substitutes noted in `note`.
 // `codes` are KeyboardEvent.code values, or 'Mouse0' (left) / 'Mouse2' (right) / 'Wheel'.
+// `modern`: the label in the modern hand style, where it differs.
 export const KEYMAP = [
   { action: 'forward',  label: 'Walk forward',        codes: ['KeyW', 'ArrowUp'],       original: 'W' },
   { action: 'back',     label: 'Walk backward',       codes: ['KeyS', 'ArrowDown', 'KeyX'], original: 'X', note: 'S walks back here (it walked forward slowly in the original)' },
@@ -12,7 +13,8 @@ export const KEYMAP = [
   { action: 'run',      label: 'Run',                 codes: ['ShiftLeft', 'ShiftRight'], original: 'W (run forward)', note: 'Shift runs while the hand is down (with the hand up it turns the wrist)' },
   { action: 'jump',     label: 'Jump',                codes: ['KeyQ'],                  original: 'Q' },
   { action: 'crouch',   label: 'Crouch',              codes: ['KeyZ'],                  original: 'Z' },
-  { action: 'hand',     label: 'Move hand (hold)',    codes: ['Mouse0'],                original: 'Left mouse' },
+  { action: 'hand',     label: 'Move hand (hold)',    codes: ['Mouse0'],                original: 'Left mouse',
+    modern: 'Fire (holding a gun) / pick up / use' },   // the modern hand style (modernhand.js)
   { action: 'grab',     label: 'Grab / drop',         codes: ['Mouse2'],                original: 'Right mouse', note: 'the browser menu on right click is suppressed' },
   { action: 'use',      label: 'Use / fire',          codes: ['Space'],                 original: 'Space' },
   { action: 'throw',    label: 'Throw',               codes: ['KeyF'],                  original: 'F' },

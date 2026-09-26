@@ -159,6 +159,13 @@ export class ModernHand {
     return false;
   }
 
+  // Whether a left click now means "fire": a gun in hand (not stowed), nothing carried,
+  // dragged or being pressed, and nothing to use under the crosshair.
+  wantsFire() {
+    const ph = this.ph;
+    return !!(this.game.gun && !ph.hand.stowed && !ph.held && !this.drag && !this.press && !this.target);
+  }
+
   // Do what the hint says.
   act(t, player, origin) {
     const ph = this.ph;
