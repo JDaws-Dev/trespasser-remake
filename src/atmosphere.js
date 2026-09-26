@@ -102,12 +102,15 @@ export class Atmosphere {
       waterNormals: normals,
       sunDirection: this.sunDir.clone(),
       sunColor: 0xfff0dc,
-      waterColor: 0x0f4b58,
-      distortionScale: 2.2,
+      waterColor: 0x2b8a8c,
+      distortionScale: 1.6,
       fog: true,
-      alpha: 0.96,
+      alpha: 0.8,
     });
-    water.material.uniforms.size.value = 6.0;
+    // Translucent, so the sandy lagoon floor shows through in the shallows.
+    water.material.transparent = true;
+    water.material.depthWrite = false;
+    water.material.uniforms.size.value = 5.0;
     // Water reflects about 2% head-on, not the shader's 30%: the sea keeps its colour.
     water.material.fragmentShader = water.material.fragmentShader.replace('float rf0 = 0.3;', 'float rf0 = 0.04;');
     water.position.z = level - 0.05;
