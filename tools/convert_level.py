@@ -292,6 +292,7 @@ def convert(level):
 
     # Terrain: world-space vertices (float32 xyz) then triangles (uint32).
     terrain_info = None
+    ter = None
     wtd = os.path.join(DATA, f'{level}.wtd')
     if os.path.exists(wtd):
         ter = Terrain(open(wtd, 'rb').read())
@@ -302,7 +303,16 @@ def convert(level):
         terrain_info = dict(vertices=len(pos), triangles=len(tris))
         print(f'  terrain: {len(pos)} vertices, {len(tris)} triangles')
 
-    level_json = dict(level=level, start=player_start, terrain=terrain_info,
+    # The sea, drawn out to the horizon: only the beach level has one (its seabed
+    # runs on under the water, so no terrain test can tell it from an inland lake).
+    HORIZON_SEA = {'be': 'TBeachWater01-00'}
+    sea = None
+    for inst in instances:
+        if inst['cls'] == 'CEntityWater' and inst['name'] == HORIZON_SEA.get(level):
+            sea = inst['pos'][2]
+    print(f'  sea level: {sea}')
+
+    level_json = dict(level=level, start=player_start, terrain=terrain_info, sea=sea,
                       models={'%x_%g' % k: v for k, v in models.items() if v}, instances=instances)
     json.dump(level_json, open(os.path.join(out, 'level.json'), 'w'))
     print(f'  wrote {out} ({len(blob) // 1024} KB of geometry)')

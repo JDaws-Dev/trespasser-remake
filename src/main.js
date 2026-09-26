@@ -74,8 +74,9 @@ if (skyTex) {
   world.add(skyPlane);
   scene.fog.far = 1600;
 }
-// The open sea reaches the horizon at the level of the largest water surface.
-sea.position.z = (seaLevel ?? 0) - 0.05;
+// The open sea reaches the horizon (only where the level has one).
+sea.visible = info.sea != null;
+sea.position.z = (info.sea ?? 0) - 0.05;
 if (terrain) {
   loading.textContent = 'Painting the terrain…';
   world.add(paintTerrain(renderer, terrain, decals));
