@@ -210,10 +210,7 @@ function makeMistTexture() {
 
 // Blood on the lens: splashes around the edges with droplets flung inward and
 // runs dripping down, the middle left clear. Hands `done` a CSS url().
-function makeScreenSplatter(w, h, done) {
-  const c = document.createElement('canvas');
-  c.width = w; c.height = h;
-  const ctx = c.getContext('2d');
+function paintScreenSplatter(ctx, w, h) {
   const paint = (x, y, r) => {
     const g = ctx.createRadialGradient(x, y, 0, x, y, r * 1.3);
     g.addColorStop(0, 'rgba(30,0,2,0.97)');
@@ -259,8 +256,37 @@ function makeScreenSplatter(w, h, done) {
     ellipse(ctx, x - R * 0.25, y - R * 0.3, R * 0.25, R * 0.08, -0.5);
     ctx.restore();
   }
-  // Encoded off the main thread.
-  c.toBlob((b) => b && done(`url(${URL.createObjectURL(b)})`));
+}
+
+// The three lens-splatter images, handed to done(i, cssUrl) as they are ready: drawn
+// in a worker where the browser can draw off the main thread, otherwise one per idle
+// moment on it.
+function makeScreenSplatters(w, h, done) {
+  const onMain = () => runSliced([0, 1, 2].map((i) => () => {
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    paintScreenSplatter(c.getContext('2d'), w, h);
+    c.toBlob((b) => b && done(i, `url(${URL.createObjectURL(b)})`));
+  }));
+  if (typeof OffscreenCanvas === 'undefined' || !window.Worker) return onMain();
+  try {
+    // The worker gets the drawing functions' own source (names as bundled).
+    const src = `const ${rand.name} = ${rand};\n${blob}\n${ellipse}\n${paintScreenSplatter}\n` +
+      `onmessage = async ({ data: { w, h } }) => { for (let i = 0; i < 3; i++) {
+        const c = new OffscreenCanvas(w, h); ${paintScreenSplatter.name}(c.getContext('2d'), w, h);
+        postMessage({ i, blob: await c.convertToBlob() }); } };`;
+    const url = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
+    const worker = new Worker(url);
+    let got = 0;
+    worker.onmessage = ({ data }) => {
+      done(data.i, `url(${URL.createObjectURL(data.blob)})`);
+      if (++got === 3) { worker.terminate(); URL.revokeObjectURL(url); }
+    };
+    worker.onerror = (e) => { e.preventDefault?.(); worker.terminate(); onMain(); };
+    worker.postMessage({ w, h });
+  } catch (e) {
+    onMain();
+  }
 }
 
 // Instanced materials read a per-instance attribute aFx: x = atlas tile (0..3),
@@ -404,6 +430,7 @@ export class Blood {
   // A bullet hit dinosaur d; `ray` is the shot (game space), `dist` how far along
   // it the hit sphere was met, `gun` the gun (its damage sizes the spray).
   shot(d, ray, dist, gun) {
+    this.screenImagesSoon();
     const p = gun?.inst?.props || {};
     const power = THREE.MathUtils.clamp(((p.Damage || 10) * (p.DamageMultiplier || 1)) / 20, 0.5, 3);
     const hit = this.surfaceHit(d, ray, dist);
@@ -437,6 +464,7 @@ export class Blood {
 
   // Raptor d bites Anne: blood bursts from its jaws and splashes the ground at her feet.
   bite(d, player) {
+    this.screenImagesSoon();
     const k = d.scale / 2.478;
     const fx = -Math.sin(d.yaw), fy = Math.cos(d.yaw);
     const mouth = new THREE.Vector3(d.pos.x + fx * 1.3 * k, d.pos.y + fy * 1.3 * k, d.pos.z + 1.2 * k);
@@ -787,16 +815,23 @@ export class Blood {
     this.screenLow = layer();
     this.screenNext = 0;
     this.lowShown = -1;
-    // The images are drawn one at a time in idle moments after start.
+    // The images are made once there is fighting (see screenImagesSoon).
     this.screenImages = [];
-    const w = PHONE ? 640 : 1280, h = PHONE ? 360 : 720;
-    runSliced([0, 1, 2].map((i) => () => makeScreenSplatter(w, h, (url) => {
+  }
+
+  // Start making the lens-splatter images, the first time blood is drawn: small
+  // (the browser scales them up; the edges are soft anyway) and off the main thread.
+  screenImagesSoon() {
+    if (this.screenStarted) return;
+    this.screenStarted = true;
+    makeScreenSplatters(PHONE ? 480 : 640, PHONE ? 270 : 360, (i, url) => {
       this.screenImages[i] = url;
       if (i === 2) this.screenLow.style.backgroundImage = url;
-    })));
+    });
   }
 
   splatterScreen(strength) {
+    this.screenImagesSoon();
     if (!this.screenImages[0] || !this.screenImages[1]) return;
     const el = this.screen[this.screenNext];
     this.screenNext = (this.screenNext + 1) % this.screen.length;
