@@ -15,7 +15,7 @@ const DECAL_LIFE = PHONE ? 60 : 120, DECAL_FADE = 25;   // seconds on the ground
 const BLEED_TIME = 25;                                  // a wound drips this long
 
 // Blood colours (sRGB): thin films are a brighter red, thick blood nearly black-red.
-const THIN = [150, 14, 8], THICK = [72, 4, 3];
+const THIN = [128, 12, 6], THICK = [58, 4, 3];
 
 const Z = new THREE.Vector3(0, 0, 1), Y = new THREE.Vector3(0, 1, 0), X = new THREE.Vector3(1, 0, 0);
 const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _q = new THREE.Quaternion(), _q2 = new THREE.Quaternion();
@@ -53,9 +53,9 @@ function drawSplat(ctx, x0, y0, s, kind) {
   if (kind === 'spray') {
     // A central splash with droplets thrown out all round.
     for (let i = 0; i < 8; i++) blob(ctx, rand(-0.08, 0.08) * s, rand(-0.08, 0.08) * s, rand(0.09, 0.18) * s, 0.35);
-    for (let i = 0; i < 60; i++) {
-      const t = Math.random() * Math.PI * 2, d = Math.pow(Math.random(), 0.7) * 0.42 * s;
-      const r = Math.max(0.6, (0.028 - d / s * 0.05) * s * rand(0.4, 1.2));
+    for (let i = 0; i < 34; i++) {
+      const t = Math.random() * Math.PI * 2, d = Math.pow(Math.random(), 0.8) * 0.4 * s;
+      const r = Math.max(1, (0.04 - d / s * 0.07) * s * rand(0.5, 1.2));
       ellipse(ctx, Math.cos(t) * d, Math.sin(t) * d, r * rand(1, 2.4), r, t);
     }
     for (let i = 0; i < 9; i++) {   // streaks flung outward from the centre
@@ -312,7 +312,7 @@ export class Blood {
     const quad = new THREE.PlaneGeometry(1, 1);
 
     // Flying droplets: small glossy drops stretched along their flight.
-    const dropMat = fxMaterial(new THREE.MeshPhysicalMaterial({ color: new THREE.Color().setRGB(0.12, 0.003, 0.002), roughness: 0.15, metalness: 0, ...SHEEN }), false);
+    const dropMat = fxMaterial(new THREE.MeshPhysicalMaterial({ color: new THREE.Color().setRGB(0.07, 0.002, 0.0015), roughness: 0.15, metalness: 0, ...SHEEN }), false);
     this.drops = instanced(new THREE.SphereGeometry(1, PHONE ? 5 : 7, PHONE ? 3 : 5), dropMat, CAP.drops, world);
     const n = CAP.drops;
     this.dPos = new Float32Array(n * 3); this.dVel = new Float32Array(n * 3);
@@ -322,7 +322,7 @@ export class Blood {
     for (let i = 0; i < n; i++) this.drops.geometry.attributes.aFx.setXY(i, 0, 1);
 
     // Mist: a fine red haze that puffs out and thins.
-    const mistMat = fxMaterial(new THREE.MeshBasicMaterial({ map: makeMistTexture(), color: new THREE.Color().setRGB(0.22, 0.01, 0.012),
+    const mistMat = fxMaterial(new THREE.MeshBasicMaterial({ map: makeMistTexture(), color: new THREE.Color().setRGB(0.16, 0.006, 0.005),
       transparent: true, depthWrite: false }), false);
     this.mist = instanced(quad, mistMat, CAP.mist, world, 3);
     this.mist.userData = { pos: new Float32Array(CAP.mist * 3), vel: new Float32Array(CAP.mist * 3), age: new Float32Array(CAP.mist),
@@ -338,6 +338,11 @@ export class Blood {
     this.wounds = instanced(quad, wet(atlas.map, atlas.bump, { polygonOffsetFactor: -4, polygonOffsetUnits: -8 }), CAP.wounds, world, 4);
     this.woundRec = Array.from({ length: CAP.wounds }, () => ({ on: false, dino: null, local: new THREE.Matrix4(), size: 0, born: 0, drip: 0, trail: 0 }));
     this.woundNext = 0;
+    // ...and a raised clot of blood in each, so the wound shows from the side as well
+    // as face on.
+    this.clots = instanced(new THREE.SphereGeometry(1, 8, 6), dropMat, CAP.wounds, world);
+    for (let i = 0; i < CAP.wounds; i++) this.clots.geometry.attributes.aFx.setXY(i, 0, 1);
+    this.clotLocal = new THREE.Matrix4().makeTranslation(0, 0, -0.06).multiply(new THREE.Matrix4().makeScale(0.3, 0.3, 0.16));
 
     // Pools spreading under the dead.
     // (The pool texture is a single image, not the atlas.)
@@ -375,7 +380,7 @@ export class Blood {
     // Exit spray along the bullet, a back-splash toward the shooter.
     this.spray(hit.point, dir, 0.55, rand(4, 8) * Math.sqrt(power), Math.round(50 * power), 0.035 * Math.sqrt(power));
     this.spray(hit.point, hit.normal, 0.8, rand(2, 4), Math.round(26 * power), 0.03);
-    this.puff(hit.point, dir, Math.round(4 + 3 * power), 0.4 + 0.25 * power);
+    this.puff(hit.point, dir, Math.round(5 + 4 * power), 0.5 + 0.3 * power);
     this.addWound(d, hit.point, hit.normal, 0.26 + 0.08 * power);
     // A splash on the ground below and beyond the hit.
     this.splatAt(_v.copy(hit.point).addScaledVector(dir, rand(0.5, 1.5)).setZ(hit.point.z + 1), 0.8 + 0.4 * power, 1, dir);
@@ -424,12 +429,23 @@ export class Blood {
   // Where the shot really meets the animal's body: a ray against its mesh, or
   // failing that the point of the ray nearest the body's middle.
   surfaceHit(d, ray, dist) {
+    // The game's hit test is a generous sphere: a shot can count without touching
+    // the body. Then aim again from the gun at the body's middle, so the wound and
+    // the spray land on the animal rather than in the air beside it.
+    const centre = _v.setFromMatrixPosition(this.dinoFrame(d, _m2)).clone();
+    return this.meshHit(d, ray.origin, ray.direction, dist + d.radius * 4)
+      || this.meshHit(d, ray.origin, centre.clone().sub(ray.origin).normalize(), dist + d.radius * 4)
+      || { point: centre, normal: ray.direction.clone().negate() };
+  }
+
+  // The nearest point where a ray (game space) meets the animal's own mesh.
+  meshHit(d, origin, dir, far) {
     const w = this.world;
     w.updateMatrixWorld();
     const rc = this.raycaster;
-    rc.ray.origin.copy(ray.origin).applyMatrix4(w.matrixWorld);
-    rc.ray.direction.copy(ray.direction).transformDirection(w.matrixWorld);
-    rc.near = 0; rc.far = dist + d.radius * 4;
+    rc.ray.origin.copy(origin).applyMatrix4(w.matrixWorld);
+    rc.ray.direction.copy(dir).transformDirection(w.matrixWorld);
+    rc.near = 0; rc.far = far;
     let best = null, bestMesh = null, bestI = 0;
     for (const { mesh, i } of this.game.refs[d.index] || []) {
       mesh.computeBoundingSphere();   // the instances move about
@@ -437,22 +453,19 @@ export class Blood {
         if (h.instanceId === i && (!best || h.distance < best.distance)) { best = h; bestMesh = mesh; bestI = i; }
       }
     }
-    const inv = w.quaternion.clone().invert();
-    if (best) {
-      const point = w.worldToLocal(best.point.clone());
-      const normal = best.face ? best.face.normal.clone() : ray.direction.clone().negate();
-      if (best.face) {
-        bestMesh.getMatrixAt(bestI, _m);
-        _m.premultiply(bestMesh.matrixWorld);
-        normal.transformDirection(_m).applyQuaternion(inv);
-        if (normal.dot(ray.direction) > 0) normal.negate();
-      }
-      return { point, normal };
+    if (!best) return null;
+    const point = w.worldToLocal(best.point.clone());
+    const normal = dir.clone().negate();
+    if (best.face) {
+      normal.copy(best.face.normal);
+      bestMesh.getMatrixAt(bestI, _m);
+      _m.premultiply(bestMesh.matrixWorld);
+      normal.transformDirection(_m).applyQuaternion(w.quaternion.clone().invert());
+      if (normal.dot(dir) > 0) normal.negate();
     }
-    const c = new THREE.Vector3(d.pos.x, d.pos.y, d.pos.z + d.radius * 0.8);
-    const t = Math.max(0, c.clone().sub(ray.origin).dot(ray.direction) - d.radius * 0.4);
-    return { point: ray.at(t, new THREE.Vector3()), normal: ray.direction.clone().negate() };
+    return { point, normal };
   }
+
 
   // The surface under a point (terrain or scenery), from the collision mesh.
   below(p, far = 30) {
@@ -684,6 +697,7 @@ export class Blood {
       const d = r.dino;
       this.dinoFrame(d, _m).multiply(r.local);
       this.wounds.setMatrixAt(i, _m);
+      this.clots.setMatrixAt(i, _m2.multiplyMatrices(_m, this.clotLocal));
       moved = true;
       // Fresh wounds bleed: drops run off and fall, leaving a trail behind the animal.
       const age = this.time - r.born;
@@ -701,7 +715,7 @@ export class Blood {
         }
       }
     }
-    if (moved) this.wounds.instanceMatrix.needsUpdate = true;
+    if (moved) { this.wounds.instanceMatrix.needsUpdate = true; this.clots.instanceMatrix.needsUpdate = true; }
   }
 
   stepPools() {

@@ -53,6 +53,9 @@ export class Physics {
     this.held = null;             // { entry, dist, qRel }
     this.dinos = [];
     this.onHint = null;
+    this.onImpact = null;         // (ev) => {} for collision sounds (sfx.js)
+    this.material = new Map();    // collider handle -> the original's SoundMaterial
+    this.events = new RAPIER.EventQueue(true);
     this.player = null;
     this.bounds = new Map();      // model key -> Box3 (model space)
     const t0 = performance.now();
@@ -78,8 +81,9 @@ export class Physics {
         for (const b of sub) {
           _v.fromArray(b.pos).multiplyScalar(inst.scale).applyQuaternion(q).add(_v2.fromArray(inst.pos));
           _q2.copy(q).multiply(boxQuat(b));
-          this.world.createCollider(RAPIER.ColliderDesc.cuboid(...b.half.map((h) => Math.max(0.02, h * inst.scale)))
+          const c = this.world.createCollider(RAPIER.ColliderDesc.cuboid(...b.half.map((h) => Math.max(0.02, h * inst.scale)))
             .setTranslation(_v.x, _v.y, _v.z).setRotation(rq(_q2)).setFriction(0.7), ground);
+          if (p.SoundMaterial) this.material.set(c.handle, p.SoundMaterial);
           staticBoxes++;
         }
         continue;
@@ -177,8 +181,11 @@ export class Physics {
     const friction = (p.Friction ?? FRICTION) / 10 * 1.1;
     const bounce = Math.min(0.5, p.Elasticity ?? p.Bounce ?? ELASTICITY);
     for (const sh of shapes) {
-      this.world.createCollider(RAPIER.ColliderDesc.cuboid(...sh.h).setTranslation(sh.c.x, sh.c.y, sh.c.z).setRotation(rq(sh.q))
-        .setDensity(mass / volume).setFriction(friction).setRestitution(bounce), body);
+      // Hard knocks (over ~3 g) are reported for their sounds.
+      const c = this.world.createCollider(RAPIER.ColliderDesc.cuboid(...sh.h).setTranslation(sh.c.x, sh.c.y, sh.c.z).setRotation(rq(sh.q))
+        .setDensity(mass / volume).setFriction(friction).setRestitution(bounce)
+        .setActiveEvents(RAPIER.ActiveEvents.CONTACT_FORCE_EVENTS).setContactForceEventThreshold(mass * 30), body);
+      if (p.SoundMaterial) this.material.set(c.handle, p.SoundMaterial);
     }
     const radius = Math.max(...shapes.map((sh) => sh.c.length() + Math.hypot(...sh.h)));
     const e = {
@@ -356,8 +363,9 @@ export class Physics {
     target.z -= 0.25;
     const t = b.translation();
     _v.set(target.x - t.x, target.y - t.y, target.z - t.z);
-    // Snagged on something, or left behind: it slips from her hand.
-    if (_v.length() > 1.6) { this.release(); return; }
+    // Snagged on something, or left behind for a moment: it slips from her hand.
+    h.stuck = _v.length() > 1.6 ? (h.stuck || 0) + STEP : 0;
+    if (h.stuck > 0.4) { this.release(); return; }
     const vmax = 14 * Math.min(1, 30 / h.entry.mass);
     _v.multiplyScalar(12);
     if (_v.length() > vmax) _v.setLength(vmax);
@@ -417,7 +425,8 @@ export class Physics {
     const e = b && this.byHandle.get(b.handle);
     if (!e || !b.isEnabled()) return false;
     const p = _v.copy(origin).addScaledVector(dir, hit.timeOfImpact);
-    const j = (push || 100) * 0.12;     // the original's Push, scaled to newton-seconds
+    // As Gun.cpp: the Push property times 5-10 % is the bullet's momentum (N·s).
+    const j = (push || 100) * (0.05 + Math.random() * 0.05);
     // Downward shots would only press the object into the ground: keep the push level.
     b.applyImpulseAtPoint({ x: dir.x * j, y: dir.y * j, z: Math.max(0, dir.z) * j + j * 0.1 }, p, true);
     // A breakable magnet lets go when shot hard enough.
@@ -479,7 +488,8 @@ export class Physics {
       for (const e of this.live) { e.prevP.copy(e.curP); e.prevQ.copy(e.curQ); }
       this.updateHeld(player);
       this.buoyancy();
-      this.world.step();
+      this.world.step(this.events);
+      this.impacts();
       this.acc -= STEP;
       steps++;
       this.world.forEachActiveRigidBody((b) => {
@@ -511,6 +521,29 @@ export class Physics {
     }
     if (steps) this.stepMs = performance.now() - t0;
     this.steps = steps;
+  }
+
+  // Collisions hard enough to hear, handed to onImpact (one per body pair per step).
+  impacts() {
+    const cb = this.onImpact;
+    this.events.drainContactForceEvents((ev) => {
+      if (!cb) return;
+      const c1 = this.world.getCollider(ev.collider1()), c2 = this.world.getCollider(ev.collider2());
+      const b1 = c1?.parent(), b2 = c2?.parent();
+      const e1 = b1 && this.byHandle.get(b1.handle), e2 = b2 && this.byHandle.get(b2.handle);
+      const e = e1 || e2;
+      if (!e) return;
+      const other = e === e1 ? e2 : e1;
+      const mass = other ? Math.min(e.mass, other.mass) : e.mass;
+      const impulse = ev.totalForceMagnitude() * STEP;
+      const v = e.body.linvel();
+      cb({
+        materialA: this.material.get(c1.handle) || (e1 ? undefined : 'terrain'),
+        materialB: this.material.get(c2.handle) || (e2 ? undefined : 'terrain'),
+        impulse, energy: 0.5 * mass * (v.x * v.x + v.y * v.y + v.z * v.z), mass,
+        point: e.curP.clone(), id: e.index,
+      });
+    });
   }
 
   // Objects that float (Floats) bob up in water below sea level.
