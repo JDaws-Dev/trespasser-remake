@@ -164,12 +164,26 @@ export class Triggers {
 
   // Object triggers hear "use" when a held gun fires (CMessageUse).
   wrapGameEvents() {
-    const g = this.game, fire = g.fire.bind(g);
+    const g = this.game, fire = g.fire.bind(g), hurt = g.hurt.bind(g);
+    // Anne's death is a creature event too: Industrial Jungle's splash-down trigger
+    // (CreatureDie on "Player") catches a fatal landing in the pond and heals her.
+    g.hurt = (amount) => {
+      if (!g.dead && g.hp - amount <= 0 && this.anneDies()) return;   // the trigger has set her hit points
+      hurt(amount);
+    };
     g.fire = (player) => {
       const gun = g.gun, ammo = gun?.ammo;
       fire(player);
       if (gun && gun.ammo !== ammo) this.objectEvent('use', gun.inst.name);
     };
+  }
+
+  anneDies() {
+    let saved = false;
+    for (const t of this.list) {
+      if (t.kind === 'creature' && t.c.CreatureDie && t.c.objects?.includes('Player') && this.attempt(t)) saved = true;
+    }
+    return saved;
   }
 
   // ---------------------------------------------------------------- where things are
@@ -186,21 +200,40 @@ export class Triggers {
     if (name === 'Anne' || name === 'Player' || name === '$AnneBody+Anne') return this.anneCentre(out);
     if (name === '$AnneFoot+Anne') return out.copy(this.player.pos);
     if (name === '$AnneHand+Anne') {
+      // The palm where it really is (physics.js drives it toward where she reaches).
       const h = this.physics?.hand;
-      return h && h.mode === 'arm' && h.target ? out.copy(h.target) : null;
+      if (!h || h.mode !== 'arm' || !h.active) return null;
+      // The fingertips: 8 cm along the palm's +Y (keypads are pressed with them).
+      const r = this.physics.handBody?.rotation();
+      if (r) return out.set(0, 0.08, 0).applyQuaternion(_q.set(r.x, r.y, r.z, r.w)).add(h.pos);
+      return out.copy(h.pos);
     }
     const d = this.dinoByName.get(name);
     if (d) return out.copy(d.pos);
     const e = this.bodyByName.get(name);
     if (e) return out.copy(e.curP);
+    const moved = this.movedObjects?.get(name);
+    if (moved) return out.copy(moved.pos);
     const o = this.objects[name] || this.instByName.get(name);
     return o ? out.fromArray(o.pos) : null;
+  }
+
+  // Roughly how far an object reaches from its origin (for non-point triggers).
+  radiusOf(name) {
+    const e = this.bodyByName.get(name);
+    if (e) return e.radius;
+    if (/Anne$|^Player$/.test(name)) return 0.3;
+    const o = this.objects[name];
+    if (o?.box) return (o.scale || 1) * Math.max(...o.box[0].map(Math.abs), ...o.box[1].map(Math.abs));
+    return 0.3;
   }
 
   // An object's placement matrix (rotation and position, no scale).
   placement(name) {
     const e = this.bodyByName.get(name);
     if (e) return new THREE.Matrix4().compose(e.curP, e.curQ, _v2.set(1, 1, 1));
+    const moved = this.movedObjects?.get(name);
+    if (moved) return new THREE.Matrix4().compose(moved.pos, moved.quat, _v2.set(1, 1, 1));
     const o = this.objects[name] || this.instByName.get(name) || this.physics?.marker?.(name);
     if (!o) return null;
     const r = o.rot;
@@ -265,7 +298,7 @@ export class Triggers {
     if (act) {
       // Anne's hand, foot and body boxes are objects to a trigger; only Anne is the player.
       const type = /^Anne$|^Player$/.test(act) ? 'player' : this.dinoByName.has(act) ? 'creature' : 'object';
-      const r = act === '$AnneHand+Anne' ? 0.06 : this.bodyByName.get(act)?.radius ?? 0.3;
+      const r = act === '$AnneHand+Anne' ? 0.02 : this.radiusOf(act);
       check(act, this.locate(act, _v2), type, r);
       if ((t.always.player || t.always.object || t.always.creature) && t.contained.has(act)) this.attempt(t);
       return;
@@ -315,8 +348,10 @@ export class Triggers {
   stepCollision(t) {
     if (t.dead) return;
     const c = t.c;
-    const touching = c.SoundMaterial1 || c.SoundMaterial2 ? false : this.touching(c.Element1, c.Element2);
-    if (touching && !t.touch) this.attempt(t);
+    const touching = c.SoundMaterial1 || c.SoundMaterial2 ? this.touchingMaterial(c) : this.touching(c.Element1, c.Element2);
+    // Contact keeps sending collisions: with a RepeatPeriod (the fences: every 0.15 s)
+    // it fires again while held there; without one, once per touch.
+    if (touching && (!t.touch || t.repeat > 0)) this.attempt(t);
     t.touch = touching;
   }
 
@@ -356,8 +391,25 @@ export class Triggers {
     return this.nearBox(stat, p, (e?.radius || 0.3) * 0.7 + 0.05);
   }
 
+  // An element against a sound material (the lab's electric fences): its position
+  // against every object of that material nearby.
+  touchingMaterial(c) {
+    const [mat, other] = c.SoundMaterial2 ? [c.Element2, c.Element1] : [c.Element1, c.Element2];
+    const list = this.logic.materials?.[mat];
+    if (!list || !other) return false;
+    const p = this.locate(other, new THREE.Vector3());
+    if (!p) return false;
+    const margin = other === '$AnneFoot+Anne' ? 0.35 : other === '$AnneHand+Anne' ? 0.03 : other === '$AnneBody+Anne' ? 0.3 : this.radiusOf(other);
+    for (const o of list) {
+      const dx = p.x - o.pos[0], dy = p.y - o.pos[1];
+      if (dx * dx + dy * dy > 100) continue;
+      if (this.nearBox(o, p, margin)) return true;
+    }
+    return false;
+  }
+
   nearBox(name, p, margin) {
-    const o = this.objects[name] || this.instByName.get(name);
+    const o = typeof name === 'string' ? this.objects[name] || this.instByName.get(name) : name;
     if (!o) return false;
     let box = o.box;
     if (!box && this.physics && o.model) {
@@ -464,6 +516,7 @@ export class Triggers {
     if (!t.c.FireZero || t.life === 1) {
       this.process(t);
       t.fired = true;
+      t.count = (t.count || 0) + 1;
       t.nextFireTime = this.t + t.repeat;
       this.log.push({ t: +this.t.toFixed(2), trigger: t.name, actions: t.actions.map((a) => a.type) });
       if (this.log.length > 500) this.log.shift();
@@ -484,7 +537,10 @@ export class Triggers {
     s.order.push(fired.name);
     const order = c.SequenceOrderNames || [];
     if (c.SequenceEvalNowNames?.includes(fired.name) || s.order.length === order.length) {
-      const right = s.order.length === order.length && s.order.every((n, i) => n === order[i]);
+      // As SequenceTrigger.cpp compares: matching up to the length of the order is enough.
+      let i = 0;
+      while (i < s.order.length && s.order[i] === order[i]) i++;
+      const right = i === order.length;
       s.order = [];
       if (right) this.attempt(s.t);
       else if (c.SequenceFalseTriggerName) { const f = this.byName.get(c.SequenceFalseTriggerName); if (f) this.attempt(f); }
@@ -745,6 +801,15 @@ export class Triggers {
       this.moveBody(e, setPos ? pos : e.curP, setRot ? quat : e.curQ);
       return 0;
     }
+    // Anything else (the invisible latch boxes the Town's console moves about): where
+    // it now is, for the triggers that watch it.
+    const o = this.objects[name] || this.instByName.get(name);
+    if (o) {
+      const cur = this.placement(name);
+      const q = new THREE.Quaternion().setFromRotationMatrix(cur), p0 = new THREE.Vector3().setFromMatrixPosition(cur);
+      (this.movedObjects ||= new Map()).set(name, { pos: setPos ? pos : p0, quat: setRot ? quat : q });
+      return 0;
+    }
     this.miss('TELEPORT', name);
     return 0;
   }
@@ -768,7 +833,15 @@ export class Triggers {
     if (!P.body(a.Target)) { this.miss('SET_PHYSICS', a.Target); return 0; }
     if (a.Frozen) { P.freeze(a.Target); return 0; }
     P.unfreeze(a.Target);
-    if (a.Impulse) { if (!P.pushFrom(a.Target, a.Emitter, a.Push || 0)) this.miss('SET_PHYSICS emitter', a.Emitter); }
+    if (a.Impulse && !P.pushFrom(a.Target, a.Emitter, a.Push || 0)) {
+      // An emitter physics.js doesn't know ($FenceGateShove...): its placement from logic.json.
+      const m = this.placement(a.Emitter);
+      if (!m) this.miss('SET_PHYSICS emitter', a.Emitter);
+      else {
+        const dir = new THREE.Vector3(m.elements[4], m.elements[5], m.elements[6]).normalize().multiplyScalar(a.Push || 0);
+        P.push(a.Target, dir, new THREE.Vector3().setFromMatrixPosition(m));
+      }
+    }
     else if (a.X !== undefined || a.Y !== undefined || a.Z !== undefined) P.setVelocity(a.Target, { x: a.X || 0, y: a.Y || 0, z: a.Z || 0 });
     return 0;
   }

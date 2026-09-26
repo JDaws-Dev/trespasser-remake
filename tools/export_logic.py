@@ -64,7 +64,7 @@ def a_list(p):
 def load_hints():
     hints = {}
     if os.path.exists(HINTS):
-        for m in re.finditer(r'IDS_STR_HINTS\s*\+\s*(\d+)\s+"((?:[^"]|"")*)"', open(HINTS, encoding='latin-1').read()):
+        for m in re.finditer(r'IDS_STR_HINTS\s*\+\s*(\d+)\s+"((?:[^"]|"")*)"', open(HINTS, encoding='cp1252').read()):
             hints[int(m.group(1))] = m.group(2).replace('""', '"').strip()
     return hints
 
@@ -177,6 +177,21 @@ def export(level):
                     wanted.add(a[k])
             if a['type'] == 'MAGNET':
                 pass
+    # Collision triggers can name a sound material instead of an object (lab's electric
+    # fences: Element2 "Fence"): every placed object of that material, for them.
+    materials = {c[k] for t in triggers for k in ('Element1', 'Element2')
+                 for c in [t['cond']] if isinstance(c.get(k), str) and c.get('SoundMaterial' + k[-1])}
+    by_material = {m: [] for m in materials}
+    if materials:
+        for i in range(count):
+            seh_obj, name_h, px, py, pz, rx, ry, rz, scale, attr, _one = struct.unpack_from('<2I7f2I', reg, 4 + 44 * i)
+            p = properties(values, attr)
+            if isinstance(p, dict) and p.get('SoundMaterial') in by_material and p.get('Tangible'):
+                box = mesh_box(seh_obj)
+                if box:
+                    by_material[p['SoundMaterial']].append(dict(
+                        name=g.symbols.get(name_h, ''), pos=[round(px, 4), round(py, 4), round(pz, 4)],
+                        rot=[[round(c, 6) for c in row] for row in euler_matrix(rx, ry, rz)], scale=round(scale, 5), box=box))
     objects = {}
     missing = []
     for n in sorted(wanted):
@@ -194,14 +209,13 @@ def export(level):
                 nxt = a['LevelName'].lower().replace('.scn', '')
     samples = sorted({a['Sample'] for t in triggers for a in t['actions'] if isinstance(a.get('Sample'), str)})
     hints = load_hints()
-    hint_ids = {a.get('HintID') for t in triggers for a in t['actions'] if a['type'] == 'SET_HINT'}
     stats = dict(triggers={}, actions={})
     for t in triggers:
         stats['triggers'][t['kind']] = stats['triggers'].get(t['kind'], 0) + 1
         for a in t['actions']:
             stats['actions'][a['type']] = stats['actions'].get(a['type'], 0) + 1
     logic = dict(level=level, next=nxt, start=start, triggers=triggers, objects=objects,
-                 teleports=teleports, hints={str(k): v for k, v in hints.items() if k in hint_ids or k // 100 == LEVELS.index(level) + 1},
+                 teleports=teleports, materials=by_material, hints={str(k): v for k, v in hints.items() if k >= 100},
                  samples=samples, stats=stats, undecoded=undecoded, missingObjects=missing)
     out = os.path.join(OUT, level)
     os.makedirs(out, exist_ok=True)
