@@ -21,6 +21,7 @@ const DEPTH_SQUEEZE = 0.02;   // fraction of the depth range the arm is drawn in
 const ARM_REACH = 0.97;       // fraction of full arm length the wrist is held out at
 const AIM_PITCH_MIN = -0.9, AIM_PITCH_MAX = 1.1;   // hand angle limits relative to the body (radians)
 const RAISE_RATE = 3.5;
+const MAX_STRETCH = 1.25;     // how far the arm may lengthen past its full reach
 const EYE_HEIGHT = 1.6;
 const SHADOW_LEVEL = 0.45;    // arm brightness in shade (sky and bounce light only)       // main.js: the camera above the player's feet       // arm raises in about 1 / RAISE_RATE seconds
 
@@ -309,13 +310,17 @@ export class Anne {
     // Two-bone reach: the elbow bends out to the right and down.
     const S = this.shoulder;
     const toW = wrist.clone().sub(S);
-    const d = Math.min(toW.length(), this.upperLen + this.foreLen - 1e-4);
+    // Past full reach the arm stretches a little (the physical hand reaches 0.95 m; her
+    // arm is 0.78 m to the wrist), so the drawn hand stays on it.
+    const full = this.upperLen + this.foreLen - 1e-4;
+    const stretch = THREE.MathUtils.clamp(toW.length() / full, 1, MAX_STRETCH);
+    const d = Math.min(toW.length(), full * stretch) / stretch;
     const dir = toW.clone().normalize();
     const a = (this.upperLen * this.upperLen - this.foreLen * this.foreLen + d * d) / (2 * d);
     const h = Math.sqrt(Math.max(0, this.upperLen * this.upperLen - a * a));
     const pole = new THREE.Vector3(1, -0.2, -1).addScaledVector(dir, -new THREE.Vector3(1, -0.2, -1).dot(dir)).normalize();
-    const elbow = S.clone().addScaledVector(dir, a).addScaledVector(pole, h);
-    wrist = S.clone().addScaledVector(dir, d);
+    const elbow = S.clone().addScaledVector(dir, a * stretch).addScaledVector(pole, h * stretch);
+    wrist = S.clone().addScaledVector(dir, d * stretch);
 
     const handUp = new THREE.Vector3(0, 0, 1).applyMatrix4(handRot);
     const upper = boneBasis(elbow.clone().sub(S), new THREE.Vector3(0, 0, 1));
@@ -323,8 +328,9 @@ export class Anne {
     // The forearm takes half the wrist's roll.
     const fore = boneBasis(wrist.clone().sub(elbow), upperUp.clone().add(handUp).normalize());
     // The hand keeps its orientation but must stay on the forearm's end.
-    P[10].copy(upper).setPosition(S);
-    P[11].copy(fore).setPosition(elbow);
+    const along = new THREE.Matrix4().makeScale(1, stretch, 1);   // bones lengthen along +Y
+    P[10].copy(upper).multiply(along).setPosition(S);
+    P[11].copy(fore).multiply(along).setPosition(elbow);
     P[21].copy(P[11]);
     P[12].copy(handRot).setPosition(wrist);
     P[13].copy(handRot).setPosition(this.wristToKnuckle.clone().applyMatrix4(handRot).add(wrist));

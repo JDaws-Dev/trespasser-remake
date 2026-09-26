@@ -152,8 +152,7 @@ export class Triggers {
       this.byName.set(t.name, t);
     }
     this.sequences = this.list.filter((t) => t.kind === 'sequence').map((t) => ({ t, order: [] }));
-    // Frozen objects (SET_PHYSICS unfreezes them) stay put until a trigger lets them go.
-    for (const e of P?.entries || []) if (e.inst.props?.Frozen === true) this.freeze(e, true);
+    // (Frozen objects are created fixed by physics.js; SET_PHYSICS lets them go.)
     // Pickup / creature state, for object and creature triggers.
     this.lastHeld = new Set();
     this.dinoState = new Map(this.game.dinos.map((d) => [d, { alive: d.alive, awake: d.awake, hp: d.hp }]));
@@ -201,7 +200,7 @@ export class Triggers {
   placement(name) {
     const e = this.bodyByName.get(name);
     if (e) return new THREE.Matrix4().compose(e.curP, e.curQ, _v2.set(1, 1, 1));
-    const o = this.objects[name] || this.instByName.get(name);
+    const o = this.objects[name] || this.instByName.get(name) || this.physics?.marker?.(name);
     if (!o) return null;
     const r = o.rot;
     return new THREE.Matrix4().set(r[0][0], r[0][1], r[0][2], o.pos[0], r[1][0], r[1][1], r[1][2], o.pos[1],
@@ -750,12 +749,7 @@ export class Triggers {
   }
 
   moveBody(e, pos, quat) {
-    const b = e.body;
-    b.setTranslation({ x: pos.x, y: pos.y, z: pos.z }, true);
-    b.setRotation({ x: quat.x, y: quat.y, z: quat.z, w: quat.w }, true);
-    b.setLinvel({ x: 0, y: 0, z: 0 }, true);
-    b.setAngvel({ x: 0, y: 0, z: 0 }, true);
-    e.curP.copy(pos); e.prevP.copy(pos); e.curQ.copy(quat); e.prevQ.copy(quat);
+    this.physics.teleport(e.inst.name, pos, quat);
     _m.compose(pos, quat, _v.setScalar(e.scale));
     for (const { mesh, i } of this.physics.refs[e.index] || []) { mesh.setMatrixAt(i, _m); mesh.instanceMatrix.needsUpdate = true; }
     if (e.track) e.track.copy(pos);
@@ -763,30 +757,18 @@ export class Triggers {
 
   // Frozen: held where it is (a fixed body) until unfrozen (NMagnetSystem::SetFrozen).
   freeze(e, on) {
-    const R = this.physics.RAPIER;
-    if (on) { e.body.setBodyType(R.RigidBodyType.Fixed, false); e.frozen = true; }
-    else if (e.frozen) { e.body.setBodyType(R.RigidBodyType.Dynamic, true); e.frozen = false; }
-    if (!on) e.body.wakeUp();
+    if (on) this.physics.freeze(e.inst.name); else this.physics.unfreeze(e.inst.name);
   }
 
   // CSetPhysicsAction: freeze / unfreeze, then an impulse along the emitter's +Y
-  // from its position, or a set velocity.
+  // from its position, or a set velocity (physics.js does the work).
   do_SET_PHYSICS(a) {
-    const e = this.bodyByName.get(a.Target);
-    if (!e) { this.miss('SET_PHYSICS', a.Target); return 0; }
-    this.freeze(e, !!a.Frozen);
-    if (a.Frozen) return 0;
-    if (a.Impulse) {
-      const m = this.placement(a.Emitter);
-      if (!m) { this.miss('SET_PHYSICS emitter', a.Emitter); return 0; }
-      const dir = new THREE.Vector3(m.elements[4], m.elements[5], m.elements[6]).normalize();
-      const at = new THREE.Vector3().setFromMatrixPosition(m);
-      const push = (a.Push || 0) * this.physics.impulseScale?.(e) || (a.Push || 0) * Math.min(e.mass, 400);
-      e.body.applyImpulseAtPoint({ x: dir.x * push, y: dir.y * push, z: dir.z * push }, { x: at.x, y: at.y, z: at.z }, true);
-    } else {
-      e.body.setLinvel({ x: a.X || 0, y: a.Y || 0, z: a.Z || 0 }, true);
-    }
-    this.physics.live.add(e);
+    const P = this.physics;
+    if (!P.body(a.Target)) { this.miss('SET_PHYSICS', a.Target); return 0; }
+    if (a.Frozen) { P.freeze(a.Target); return 0; }
+    P.unfreeze(a.Target);
+    if (a.Impulse) { if (!P.pushFrom(a.Target, a.Emitter, a.Push || 0)) this.miss('SET_PHYSICS emitter', a.Emitter); }
+    else if (a.X !== undefined || a.Y !== undefined || a.Z !== undefined) P.setVelocity(a.Target, { x: a.X || 0, y: a.Y || 0, z: a.Z || 0 });
     return 0;
   }
 
@@ -799,10 +781,12 @@ export class Triggers {
     const master = this.bodyByName.get(a.MasterObject), slave = a.SlaveObject ? this.bodyByName.get(a.SlaveObject) : null;
     if (!master) { this.miss('MAGNET', a.MasterObject); return 0; }
     for (const e of [master, slave]) if (e && (P.held?.entry === e || P.hand?.holding === e)) P.release?.();
-    const old = P.joints.filter((j) => (j.slave === master && j.master === (slave || null)) || (j.slave === slave && j.master === master) ||
-      (!slave && j.slave === master && !j.master));
-    let prev = old[0]?.params || { free: [false, false, false], drive: 0, friction: 0, min: 0, max: 0, breakStrength: 0 };
-    for (const j of old) { P.world.removeImpulseJoint(j.joint, true); P.joints.splice(P.joints.indexOf(j), 1); if (!j.master) j.slave.pinned = false; }
+    const old = P.joints.filter((j) => j.joint && ((j.slave === master && j.master === (slave || null)) || (j.slave === slave && j.master === master) ||
+      (!slave && j.slave === master && !j.master)));
+    const sp = old[0]?.params || old[0]?.spec;
+    const prev = old[0]?.params || { free: sp?.free || [false, false, false], drive: sp?.drive || 0, friction: sp?.friction || 0,
+      min: sp?.angleMin || 0, max: sp?.angleMax || 0, breakStrength: sp?.breakStrength || 0 };
+    for (const j of old) P.removeJoint(j);
     master.body.wakeUp(); slave?.body.wakeUp();
     if (a.Enable === false) { this.freeze(master, false); if (slave) this.freeze(slave, false); return 0; }
     const given = { free: [a.XFree, a.YFree, a.ZFree], drive: a.Drive, friction: a.Friction, min: a.AngleMin, max: a.AngleMax, breakStrength: a.BreakStrength };
@@ -817,17 +801,20 @@ export class Triggers {
     } else {
       params = { free: given.free.map(Boolean), drive: given.drive || 0, friction: given.friction || 0, min: given.min || 0, max: given.max || 0, breakStrength: given.breakStrength || 0 };
     }
-    const at = master.curP, r = new THREE.Matrix4().makeRotationFromQuaternion(master.curQ).elements;
-    const mg = { pos: at.toArray(), rot: [[r[0], r[4], r[8]], [r[1], r[5], r[9]], [r[2], r[6], r[10]]], free: params.free, breakStrength: params.breakStrength };
+    const spec = { free: params.free, drive: params.drive, friction: params.friction, angleMin: params.min, angleMax: params.max, breakStrength: params.breakStrength };
     this.freeze(master, false); if (slave) this.freeze(slave, false);
-    // One object: magnetted to the world. Two: the slave hangs off the master.
-    if (slave) P.addMagnet(mg, slave, master); else P.addMagnet(mg, master, null);
-    const j = P.joints[P.joints.length - 1];
-    j.params = params;
-    if (params.free.filter(Boolean).length === 1) {
-      if (params.drive) j.joint.configureMotorVelocity?.(params.drive, Math.max(0.5, params.friction || 1) * master.mass);
-      if (params.min || params.max) j.joint.setLimits?.(params.min * Math.PI / 180, params.max * Math.PI / 180);
+    if (!slave) {
+      // One object: magnetted to the world (a lock, or a motor-driven hinge).
+      P.setMagnet(master.inst.name, spec);
+    } else {
+      // Two: the slave hangs off the master, at the master's placement.
+      const r = new THREE.Matrix4().makeRotationFromQuaternion(master.curQ).elements;
+      P.addMagnet({ pos: master.curP.toArray(), rot: [[r[0], r[4], r[8]], [r[1], r[5], r[9]], [r[2], r[6], r[10]]], free: params.free,
+        tfree: [false, false, false], drive: params.drive, friction: params.friction, angleMin: params.min, angleMax: params.max,
+        breakStrength: params.breakStrength }, slave, master);
     }
+    const nj = P.joints[P.joints.length - 1];
+    if (nj) nj.params = params;
     return 0;
   }
 

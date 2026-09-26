@@ -454,8 +454,8 @@ export class DinoAI {
         }
         const straight = tDist < 5 || this.anneFacingAway(d, player);
         want = rotate2(to, straight ? 0 : d.cine);
-        // Stand off at biting distance rather than climbing onto her.
-        const stand = Math.max(0.8, d.headReach * 0.75);
+        // Stand off with its jaws at her rather than climbing onto her.
+        const stand = d.headReach + 0.2;
         speed = tDist > stand ? run : 0;
         if (tDist < stand * 3 && tDist > stand) speed = Math.min(run, walk + (tDist - stand) * 2);
         break;
@@ -522,7 +522,7 @@ export class DinoAI {
     if (d.attack && tDist < d.headReach + 1.5) {
       // Biting: face her, only shuffling in.
       want = { x: to.x, y: to.y };
-      speed = Math.min(speed, tDist > d.headReach * 0.8 ? walk : 0);
+      speed = Math.min(speed, tDist > d.headReach + 0.2 ? walk : 0);
     }
     if (d.flinch > 0) speed *= 0.2;
     if (want) {
@@ -619,7 +619,7 @@ export class DinoAI {
       if (d.biteT <= 0) {
         d.biteCool = 1.0;
         if (this.inReach(d, player, d.pos.distanceTo(player.pos))) {
-          const dmg = (d.attack === 'ram' ? d.boxes.head[1] : d.boxes.head[1]) * 10 * CHOMP;
+          const dmg = d.boxes.head[1] * 10 * CHOMP;   // a ram hits with the head box too
           if (dmg > 0) {
             this.game.audio?.vocal(d.vocal, 'Bite', d.pos);
             this.game.blood?.bite(d, player);
@@ -645,7 +645,7 @@ export class DinoAI {
     if (Math.abs(player.pos.z + 1 - (d.pos.z)) > d.headReach + 2) return false;
     const dx = player.pos.x - d.pos.x, dy = player.pos.y - d.pos.y;
     const flat = Math.hypot(dx, dy);
-    if (flat > d.headReach + 0.6) return false;
+    if (flat > d.headReach + 0.8) return false;
     const fx = -Math.sin(d.yaw), fy = Math.cos(d.yaw);
     return (dx * fx + dy * fy) / (flat || 1) > 0.45;
   }

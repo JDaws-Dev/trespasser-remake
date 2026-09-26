@@ -497,6 +497,7 @@ export class Physics {
       entry: e, dist: THREE.MathUtils.clamp(_v2.set(t.x, t.y, t.z).distanceTo(origin), 0.7 + e.radius * 0.6, 1.2 + e.radius),
       qRel: yawQ.clone().invert().multiply(new THREE.Quaternion(r.x, r.y, r.z, r.w)),
     };
+    this.hand.rotation.identity();   // the wrist turns it from how it was picked up
     e.body.setGravityScale(0, true);
     e.body.wakeUp();
     return true;
@@ -532,7 +533,8 @@ export class Physics {
     // Within arm's reach of her right shoulder (about 0.85 m), along her view.
     const { dir } = this.eyeRay(player);
     if (this.swing.stage) dir.applyAxisAngle(_s.set(0, 0, 1), -this.swing.ax);   // swung across her
-    const target = this.shoulder(player).addScaledVector(dir, Math.min(0.85, 0.4 + h.entry.radius * 0.6));
+    const target = this.hand.aiming ? this.handTarget(player, new THREE.Vector3())
+      : this.shoulder(player).addScaledVector(dir, Math.min(0.85, 0.4 + h.entry.radius * 0.6));
     const t = b.translation();
     _v.set(target.x - t.x, target.y - t.y, target.z - t.z);
     // Snagged on something, or left behind for a moment: it slips from her hand.
@@ -542,8 +544,8 @@ export class Physics {
     _v.multiplyScalar(12);
     if (_v.length() > vmax) _v.setLength(vmax);
     b.setLinvel(_v, true);
-    // Keep the grip orientation, turning with Anne.
-    const want = _q.setFromAxisAngle(_s.set(0, 0, 1), player.yaw).multiply(h.qRel);
+    // Keep the grip orientation, turning with Anne and with her wrist (Shift / Alt + mouse).
+    const want = _q.setFromAxisAngle(_s.set(0, 0, 1), player.yaw).multiply(this.hand.rotation).multiply(h.qRel);
     const r = b.rotation();
     _q2.set(r.x, r.y, r.z, r.w).invert().premultiply(want);   // want * cur^-1
     if (_q2.w < 0) { _q2.x = -_q2.x; _q2.y = -_q2.y; _q2.z = -_q2.z; _q2.w = -_q2.w; }
@@ -605,6 +607,17 @@ export class Physics {
     if (on === h.aiming) return;
     h.aiming = on;
     if (on && !h.active && player) {
+      if (this.held) {
+        // Carrying something: the hand starts where it is, and moves it from there.
+        const s = this.shoulder(player), p = this.held.entry.curP;
+        _v.set(p.x - s.x, p.y - s.y, p.z - s.z);
+        const c = Math.cos(player.yaw), sn = Math.sin(player.yaw);
+        const bx = _v.x * c + _v.y * sn, by = -_v.x * sn + _v.y * c;
+        h.ax = Math.atan2(bx, by);
+        h.ay = THREE.MathUtils.clamp(Math.atan2(_v.z, Math.hypot(bx, by)), -HAND_PITCH, HAND_PITCH);
+        h.reach = THREE.MathUtils.clamp(_v.length(), 0.3, HAND_REACH_MAX);
+        return;
+      }
       // Raised to the middle of her view (ang2HandView in the original: 12.5° right, level).
       h.ax = 12.5 * Math.PI / 180;
       h.ay = THREE.MathUtils.clamp(player.pitch, -HAND_PITCH, HAND_PITCH);
@@ -652,7 +665,7 @@ export class Physics {
 
   handTarget(player, out) {
     const h = this.hand;
-    const ax = this.swing.stage && h.holding ? this.swing.ax : h.ax;
+    const ax = this.swing.stage && (h.holding || this.held) ? this.swing.ax : h.ax;
     const ca = Math.cos(h.ay), bx = Math.sin(ax) * ca, by = Math.cos(ax) * ca, bz = Math.sin(h.ay);
     const c = Math.cos(player.yaw), s = Math.sin(player.yaw);
     // Body frame (x right, y ahead) to game space.
@@ -673,6 +686,15 @@ export class Physics {
   updateHand(player) {
     const h = this.hand, b = this.handBody;
     const up = h.aiming || !!h.holding || h.cock > 0;
+    if (this.held) {
+      // An E-carried object is the hand's grip: the hand body stays out of its way, and
+      // with the hand key held the object goes where the hand is moved and turned.
+      if (h.active) { h.active = false; b.setEnabled(false); }
+      h.autoCrouch = h.aiming && h.ay < -0.75;
+      h.mode = h.aiming ? 'arm' : h.stowed ? 'stow' : 'look';
+      if (h.aiming) { this.handTarget(player, h.target); h.pos.copy(this.held.entry.curP); }
+      return;
+    }
     if (!up) {
       h.autoCrouch = false;
       if (h.active) { h.active = false; b.setEnabled(false); }
