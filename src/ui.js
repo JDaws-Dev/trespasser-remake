@@ -1,10 +1,10 @@
-// Screens and HUD drawn in the DOM over the 3D view: the start / pause overlay,
-// the death overlay, damage feedback (red flash, shake, low-health heartbeat)
-// and the health / weapon / hint readout.
-export const LEVELS = [
-  ['be', 'Beach'], ['jr', 'Jungle Road'], ['ij', 'Industrial Jungle'], ['it', 'Town'],
-  ['lab', 'Lab'], ['as', 'Ascent'], ['as2', 'Ascent 2'], ['sum', 'Summit'],
-];
+// The HUD drawn in the DOM over the 3D view (health / weapon / hint readout, damage
+// feedback: red flash, shake, low-health heartbeat) and the pause state the game and
+// input read. Menus, pause screen, death and the loader are the original front end
+// (frontend.js); this hands it the game once the level is ready.
+import { front, LEVELS } from './frontend.js';
+
+export { LEVELS };
 const LOW_HP = 30;
 
 // Shared with Input: while paused, input reads as idle so Anne stands still.
@@ -31,33 +31,14 @@ export class UI {
     this.hurtEl = $('hurt');
     this.lowEl = $('lowhp');
 
-    // Start / pause overlay.
-    const params = new URLSearchParams(location.search);
-    const list = $('levels');
-    for (const [id, name] of LEVELS) {
-      const q = new URLSearchParams(params);
-      q.set('level', id);
-      q.delete('at');   // a teleport spot belongs to the level it was taken in
-      const a = document.createElement('a');
-      a.href = '?' + q.toString();
-      a.textContent = name;
-      if (id === level) a.className = 'current';
-      list.append(a);
-    }
-    $('controls').textContent = touch
-      ? 'Left stick walks, right stick looks. GRAB picks up a gun, FIRE shoots, JUMP jumps.'
-      : 'Mouse looks · WASD walks · Shift runs · Space jumps · E picks up · Click fires · G drops · Esc pauses';
-    $('play').addEventListener('click', () => this.resume());
     $('btn-pause')?.addEventListener('touchstart', (e) => { e.preventDefault(); this.pause(); }, { passive: false });
-    $('again').addEventListener('click', () => location.reload());
-    $('menu').hidden = false;
 
     // Esc releases pointer lock (the browser swallows the key), so losing the lock
-    // is what pauses on desktop; the key itself covers the unlocked case.
+    // is what pauses on desktop; the front end handles the key itself when unlocked.
     document.addEventListener('pointerlockchange', () => {
       if (!document.pointerLockElement && state.started && !game.dead) this.pause();
     });
-    addEventListener('keydown', (e) => { if (e.code === 'Escape' && state.started && !game.dead) this.pause(); });
+    front.attach(this, game);
   }
 
   get paused() { return state.paused; }
@@ -66,10 +47,8 @@ export class UI {
     const first = !state.started;
     state.started = true;
     state.paused = false;
-    $('menu').hidden = true;
-    $('play').textContent = 'Resume';
     document.body.classList.add('playing');
-    // The opening hint would have run out behind the overlay: give it its time now.
+    // The opening hint would have run out behind the menus: give it its time now.
     if (first && this.game.hint) this.game.hintUntil = performance.now() + 6000;
     if (!this.touch && this.canvas) {
       // Refused right after Esc (browsers enforce a short wait); a click on the view retries.
@@ -78,20 +57,19 @@ export class UI {
   }
 
   pause() {
-    if (state.paused) return;
+    if (state.paused || !state.started) return;
     state.paused = true;
-    $('menu').hidden = false;
     document.body.classList.remove('playing');
+    front.pauseMenu();
   }
 
   died() {
     state.paused = true;
     document.body.classList.remove('playing');
     document.body.classList.add('dead');
-    $('menu').hidden = true;
-    $('death').hidden = false;
     if (document.pointerLockElement) document.exitPointerLock();
     this.flash(1);
+    front.died();
   }
 
   // A hit: the red edges flash and the view jolts, harder for bigger bites.

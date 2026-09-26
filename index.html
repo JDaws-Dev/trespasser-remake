@@ -37,26 +37,40 @@
   @keyframes shake {
     0% { transform: translate(0, 0) scale(1.03); } 20% { transform: translate(-9px, 5px) scale(1.03); } 40% { transform: translate(8px, -6px) scale(1.03); }
     60% { transform: translate(-5px, -3px) scale(1.03); } 80% { transform: translate(3px, 4px) scale(1.03); } 100% { transform: translate(0, 0) scale(1); } }
-  /* Start / pause and death screens. */
-  .screen { position: fixed; inset: 0; display: grid; place-items: center; overflow-y: auto; padding: var(--edge-t) var(--edge-r) var(--edge-b) var(--edge-l);
-            background: radial-gradient(ellipse at center, rgba(0,0,0,.45), rgba(0,0,0,.8)); color: var(--ink); font: 15px/1.4 -apple-system, "Segoe UI", sans-serif;
-            text-align: center; z-index: 10; }
-  .screen[hidden] { display: none; }
-  .screen h1 { margin: 0; font: 700 clamp(38px, 8vw, 64px)/1 Georgia, "Times New Roman", serif; letter-spacing: .06em; text-transform: uppercase; }
-  .screen .sub { margin: 8px 0 22px; color: var(--dim); font-size: 14px; }
-  #levels { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; max-width: 520px; margin: 0 auto 22px; }
-  #levels a { color: var(--ink); text-decoration: none; padding: 7px 12px; border-radius: 16px; border: 1px solid rgba(255,255,255,.25); font-size: 14px; }
-  #levels a.current { background: var(--ink); color: #111; border-color: var(--ink); }
-  .screen button { font: 700 17px -apple-system, "Segoe UI", sans-serif; letter-spacing: .08em; text-transform: uppercase; color: #111; background: var(--ink);
-                   border: 0; border-radius: 28px; padding: 14px 44px; cursor: pointer; }
-  #controls { margin: 16px auto 0; max-width: 460px; color: var(--dim); font-size: 13px; }
-  #death { background: radial-gradient(ellipse at center, rgba(60,0,0,.55), rgba(20,0,0,.9)); }
-  #death h1 { font-size: clamp(32px, 7vw, 54px); text-transform: none; letter-spacing: .02em; margin-bottom: 26px; }
-  @media (max-height: 460px) {
-    .screen .sub { margin: 4px 0 12px; } #levels { margin-bottom: 12px; } #controls { margin-top: 10px; }
-    .screen button { padding: 11px 38px; } #levels a { padding: 5px 11px; }
-  }
-  #loading { position: fixed; inset: 0; display: grid; place-items: center; font: 14px -apple-system, sans-serif; color: #b9b39a; background: #000; }
+  /* The original front end (src/frontend.js): windows from the .ddf layouts at their
+     640x480 / 320x200 pixel coordinates, scaled from the centre of the screen. */
+  #loading { display: none; }   /* main.js's progress text; the loader screen reads it */
+  #fe { position: fixed; inset: 0; z-index: 20; overflow: hidden; -webkit-tap-highlight-color: transparent; }
+  #fe[hidden] { display: none; }
+  #fe.opaque { background: #000; }
+  #fe.dim { background: rgba(0, 0, 0, .35); }
+  #fe .fe-shield { position: absolute; inset: 0; }
+  .fe-win { position: absolute; left: 50%; top: 50%; transform-origin: 50% 50%; font-family: Arial, Helvetica, sans-serif; color: #fff; }
+  .fe-win > * { position: absolute; }
+  .fe-win [hidden] { display: none !important; }
+  .fe-win img { display: block; -webkit-user-drag: none; }
+  .fe-button { cursor: pointer; touch-action: none; }
+  .fe-button.disabled, .fe-check.disabled { opacity: .45; cursor: default; }
+  .fe-text { display: flex; line-height: 1.15; overflow: hidden; pointer-events: none;
+             text-shadow: 1px 1px 0 #000; }   /* "back lit" text: a black copy one pixel down-right */
+  .fe-text.border { box-shadow: inset 0 0 0 1px #9a9a9a; padding: 0 3px; box-sizing: border-box; }
+  .fe-blink { animation: fe-blink 1.4s ease-in-out infinite; }
+  @keyframes fe-blink { 50% { opacity: .35; } }
+  .fe-list { font-size: 12px; text-shadow: 1px 1px 0 #000; }
+  .fe-list .rows { position: absolute; inset: 0 17px 0 0; overflow-y: auto; scrollbar-width: none; overscroll-behavior: contain; touch-action: pan-y; }
+  .fe-list .rows::-webkit-scrollbar { display: none; }
+  .fe-list .row { padding: 1px 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; line-height: 14px; }
+  .fe-list .row.sel { background: #808080; }
+  .fe-win.bare .fe-list { background: #808080; }   /* no plate behind it: the listbox's own grey */
+  .fe-list .arrow { position: absolute; right: 0; cursor: pointer; }
+  .fe-list .arrow.up { top: 0; } .fe-list .arrow.dn { bottom: 0; }
+  .fe-check { cursor: pointer; }
+  .fe-hot { cursor: pointer; }
+  .fe-slider { cursor: pointer; touch-action: none; }
+  .fe-slider .thumb { position: absolute; top: 0; }
+  .fe-progress i { display: block; height: 100%; }
+  #fe-video { position: fixed; inset: 0; z-index: 30; background: #000; display: grid; place-items: center; cursor: pointer; }
+  #fe-video video { width: 100%; height: 100%; object-fit: contain; }
   .stick { position: fixed; bottom: max(24px, env(safe-area-inset-bottom)); width: 132px; height: 132px; border-radius: 50%;
            border: 2px solid rgba(255,255,255,.25); background: rgba(0,0,0,.15); display: none; }
   .stick i { position: absolute; left: 41px; top: 41px; width: 50px; height: 50px; border-radius: 50%; background: rgba(255,255,255,.35); }
@@ -85,21 +99,6 @@
 <div class="btn" id="btn-grab">GRAB</div>
 <div class="btn" id="btn-jump">JUMP</div>
 <div class="btn" id="btn-pause">II</div>
-<div class="screen" id="menu" hidden>
-  <div>
-    <h1>Trespasser</h1>
-    <p class="sub">A browser remake of the 1998 game</p>
-    <nav id="levels"></nav>
-    <button id="play">Play</button>
-    <p id="controls"></p>
-  </div>
-</div>
-<div class="screen" id="death" hidden>
-  <div>
-    <h1>Anne is dead.</h1>
-    <button id="again">Try again</button>
-  </div>
-</div>
 <script type="module" src="/src/main.js"></script>
 </body>
 </html>

@@ -2,5 +2,7 @@ node_modules/
 dist/
 ref/
 public/levels/
+public/menu/
 __pycache__/
 public/levels/*/hd/
+public/levels/*/tex_m/
