@@ -406,7 +406,16 @@ export class Triggers {
         if (hit) return true;
       }
       const held = P.hand?.holding || P.held?.entry;
-      return held && held !== e1 && held.curP.distanceTo(e1.curP) < held.radius + e1.radius * 0.6;
+      if (held && held !== e1 && held.curP.distanceTo(e1.curP) < held.radius + e1.radius * 0.6) return true;
+      // A moving body rolling over a thin fixed one (the rolling head over a 12 cm stair
+      // edge) can skip the contact: count it when it passes within reach of its box.
+      for (const e of P.live) {
+        if (e === e1 || e.frozen) continue;
+        const v = e.body.linvel();
+        if (v.x * v.x + v.y * v.y + v.z * v.z < 0.25) continue;
+        if (this.nearBox(n1, e.curP, e.radius * 0.6)) return true;
+      }
+      return false;
     }
     if (e1 && e2) {
       for (const ca of collidersOf(e1)) for (const cb of collidersOf(e2)) if (contact(ca, cb)) return true;
