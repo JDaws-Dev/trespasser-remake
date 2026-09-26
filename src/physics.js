@@ -18,7 +18,31 @@ const REACH = 2.6;                    // metres from the eye
 const PLAYER_R = 0.3, PLAYER_H = 1.7;
 const ANNE_MASS = 55;                 // kg: what she presses on what she stands on
 const DENSITY = 0.1, FRICTION = 5, ELASTICITY = 0.2;
-const STATIC = 0x0002;                // collision group of the static world
+const STATIC = 0x0002;                // collision group of the static world...
+const TERRAIN = 0x0004;               // ...of which the terrain is also this
+
+// Set-piece assists: where faithful physics cannot reproduce what the original did, a
+// minimal nudge, per object (name, or a name prefix ending in '*'), and why:
+const ASSISTS = {
+  // as: the temple's falling walls are pushed (SET_PHYSICS Push 25 at mid-height) and
+  // toppled in the original; in Rapier the 400 kg slabs only slide a few cm. The push
+  // is applied high on the slab, hard enough to tip it over.
+  'SFallingWall-*': { topple: 1.8 },
+  // as2: the trailer on the cliff edge see-saws over under Anne and slides down with her;
+  // its one big box barely tips under her 55 kg (a marginal balance even in the
+  // original). Her weight counts four times on it.
+  'Scontrailershore-00': { weight: 4 },
+  // jr: the unfrozen monorail track sections fall onto the terrain in the original; here
+  // they caught on the static track and pylons after 0.8-0.95 m. They pass through static
+  // scenery (still landing on the terrain and hitting everything that moves).
+  'SMonoRailTrack108-00': { throughScenery: true },
+  'SMonoRailTrack200-00': { throughScenery: true },
+};
+function assistFor(name) {
+  if (ASSISTS[name]) return ASSISTS[name];
+  for (const [k, v] of Object.entries(ASSISTS)) if (k.endsWith('*') && name.startsWith(k.slice(0, -1))) return v;
+  return null;
+}
 // The hand (PlayerSettings in Player.cpp): reach, angle limits, grab distance, throw.
 const HAND_REACH = 0.8, HAND_REACH_MAX = 0.95, HAND_GRAB = 0.2;
 const HAND_PITCH = 75 * Math.PI / 180, HAND_TURN = 35 * Math.PI / 180;
@@ -126,7 +150,7 @@ export class Physics {
     this.ground = ground;
     if (terrain) {
       const g = terrain.geometry;
-      this.world.createCollider(RAPIER.ColliderDesc.trimesh(new Float32Array(g.getAttribute('position').array),
+      this.terrainCol = this.world.createCollider(RAPIER.ColliderDesc.trimesh(new Float32Array(g.getAttribute('position').array),
         new Uint32Array(g.getIndex().array)).setFriction(0.9), ground);
     }
     const verts = [];
@@ -222,6 +246,7 @@ export class Physics {
     for (const e of this.entries) e.body.sleep();
     // The static world is its own collision group (hinged things can be let off it).
     for (let i = 0; i < ground.numColliders(); i++) ground.collider(i).setCollisionGroups((STATIC << 16) | 0xffff);
+    if (this.terrainCol) this.terrainCol.setCollisionGroups(((STATIC | TERRAIN) << 16) | 0xffff);
     // One step before Anne's collider exists: a parentless collider added to a world
     // that has never stepped leaves Rapier 0.21's broad phase blind to everything.
     this.world.step();
@@ -242,8 +267,14 @@ export class Physics {
         });
       }
       if (!jammed) continue;
-      for (let i = 0; i < b.numColliders(); i++) b.collider(i).setCollisionGroups((0x0001 << 16) | (0xffff & ~STATIC));
+      for (let i = 0; i < b.numColliders(); i++) b.collider(i).setCollisionGroups((0x0001 << 16) | (0xffff & ~(STATIC | TERRAIN)));
       this.unjammed.push(j.slave.inst.name);
+    }
+
+    // Assisted set pieces that fall through static scenery (onto the terrain).
+    for (const e of this.entries) {
+      if (!assistFor(e.inst.name)?.throughScenery) continue;
+      for (let i = 0; i < e.body.numColliders(); i++) e.body.collider(i).setCollisionGroups((0x0001 << 16) | ((0xffff & ~STATIC) | TERRAIN));
     }
 
     this.mark('firstStep');
@@ -488,6 +519,16 @@ export class Physics {
     // step, so Δv = Push / mass), but its boxes slid and rolled far more freely than
     // Rapier's: at 1x the Ascent's rolling head stops 2.5 m short of the stairs it must
     // reach. Scripted pushes are scaled by pushScale (4: the head reaches the stairs).
+    const a = assistFor(name), e = this.body(name);
+    if (a?.topple && e) {
+      // Pushed high on the slab (near its top), enough to tip it: a·mass N·s.
+      this.unfreeze(name);
+      const b = this.modelBounds(e.inst.model);
+      const top = e.curP.clone().add(new THREE.Vector3(0, 0, b.max.z * e.scale * 0.9));
+      dir.z = 0; dir.normalize();
+      e.body.applyImpulseAtPoint(dir.multiplyScalar(a.topple * e.mass), top, true);
+      return true;
+    }
     return this.push(name, dir.multiplyScalar(push * this.pushScale), pos);
   }
 
@@ -632,7 +673,8 @@ export class Physics {
       const b = hit?.collider.parent();
       const e = b && this.byHandle.get(b.handle);
       if (e && b.isDynamic() && !e.pinned && e !== this.held?.entry) {
-        b.applyImpulseAtPoint({ x: 0, y: 0, z: -ANNE_MASS * 9.81 * dt }, { x: player.pos.x, y: player.pos.y, z: player.pos.z + 0.1 - hit.timeOfImpact }, true);
+        const w = assistFor(e.inst.name)?.weight || 1;
+        b.applyImpulseAtPoint({ x: 0, y: 0, z: -ANNE_MASS * w * 9.81 * dt }, { x: player.pos.x, y: player.pos.y, z: player.pos.z + 0.1 - hit.timeOfImpact }, true);
       }
     }
     return grounded;
