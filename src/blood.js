@@ -472,9 +472,11 @@ export class Blood {
   // Raptor d bites Anne: blood bursts from its jaws and splashes the ground at her feet.
   bite(d, player) {
     this.screenImagesSoon();
+    // The snout: d.jaw ahead of the body's centre (the models face +Y), up at head height.
     const k = d.scale / 2.478;
     const fx = -Math.sin(d.yaw), fy = Math.cos(d.yaw);
-    const mouth = new THREE.Vector3(d.pos.x + fx * 1.3 * k, d.pos.y + fy * 1.3 * k, d.pos.z + 1.2 * k);
+    const jaw = d.jaw ?? 1.3 * k, up = d.bounds ? d.bounds.max.z * d.scale * 0.75 : 0.3 * k;
+    const mouth = new THREE.Vector3(d.pos.x + fx * jaw, d.pos.y + fy * jaw, d.pos.z + up);
     const toAnne = new THREE.Vector3(player.pos.x - mouth.x, player.pos.y - mouth.y, player.pos.z + 1.1 - mouth.z).normalize();
     const at = mouth.clone().addScaledVector(toAnne, 0.4);
     this.spray(at, toAnne.clone().negate().setZ(0.6).normalize(), 0.9, rand(2.5, 5), 70, 0.009);
@@ -676,11 +678,17 @@ export class Blood {
     this.stepWounds(dt);
     this.stepPools();
     this.stepScreen();
+    // A few seconds into play, make the lens splatter (in a worker) so the first bite has it.
+    if (this.time > 3) this.screenImagesSoon();
   }
 
   stepDrops(dt) {
     const { dPos: P, dVel: V, dLife: L, dSize: S } = this;
     const drag = Math.exp(-1.2 * dt);
+    // Drops right at the lens would fill the view as big beads: those are left to
+    // the screen splatter.
+    const eye = this.world.worldToLocal(_v2.copy(this.game.camera.position));
+    const ex = eye.x, ey = eye.y, ez = eye.z;
     let live = false;
     for (let i = 0; i < CAP.drops; i++) {
       if (L[i] <= 0) continue;
@@ -691,6 +699,8 @@ export class Blood {
       P[i * 3] += V[i * 3] * dt; P[i * 3 + 1] += V[i * 3 + 1] * dt; P[i * 3 + 2] += V[i * 3 + 2] * dt;
       if (P[i * 3 + 2] < this.dFloor[i]) { this.land(i); L[i] = 0; }
       if (L[i] <= 0) { this.drops.setMatrixAt(i, ZERO); continue; }
+      const cx = P[i * 3] - ex, cy = P[i * 3 + 1] - ey, cz = P[i * 3 + 2] - ez;
+      if (cx * cx + cy * cy + cz * cz < 0.36) { this.drops.setMatrixAt(i, ZERO); continue; }
       _v.set(V[i * 3], V[i * 3 + 1], V[i * 3 + 2]);
       const speed = _v.length();
       _q.setFromUnitVectors(Y, speed > 1e-4 ? _v.divideScalar(speed) : Z);
@@ -821,11 +831,12 @@ export class Blood {
     this.screenLow = layer();
     this.screenNext = 0;
     this.lowShown = -1;
-    // The images are made once there is fighting (see screenImagesSoon).
+    // The images are made a few seconds into play (see screenImagesSoon).
     this.screenImages = [];
   }
 
-  // Start making the lens-splatter images, the first time blood is drawn: small
+  // Start making the lens-splatter images (a few seconds into play, or at the first
+  // blood if that comes sooner): small
   // (the browser scales them up; the edges are soft anyway) and off the main thread.
   screenImagesSoon() {
     if (this.screenStarted) return;
