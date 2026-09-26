@@ -107,33 +107,23 @@ function drawSplat(ctx, x0, y0, s, kind) {
   ctx.restore();
 }
 
-// Turn a white-on-transparent mask into blood colour (alpha = mask) and a
-// height map for the bump (blurred mask: thick where the blood pooled).
-function maskToTextures(canvas, dark = 0) {
-  const w = canvas.width, h = canvas.height;
-  const mask = canvas.getContext('2d').getImageData(0, 0, w, h).data;
-  // Blur by shrinking and growing again (canvas filters are missing on older Safari).
-  const small = document.createElement('canvas');
-  small.width = w / 8; small.height = h / 8;
-  const sc = small.getContext('2d');
-  sc.drawImage(canvas, 0, 0, small.width, small.height);
-  const big = document.createElement('canvas');
-  big.width = w; big.height = h;
-  const bc = big.getContext('2d');
-  bc.imageSmoothingQuality = 'high';
-  bc.drawImage(small, 0, 0, w, h);
-  const thick = bc.getImageData(0, 0, w, h).data;
-  const color = new Uint8Array(w * h * 4), height = new Uint8Array(w * h * 4);
-  for (let i = 0; i < w * h; i++) {
-    const a = mask[i * 4 + 3], t = Math.min(1, thick[i * 4 + 3] / 255 * 1.4 + dark);
-    const n = 0.9 + Math.random() * 0.1;
-    for (let c = 0; c < 3; c++) color[i * 4 + c] = (THIN[c] + (THICK[c] - THIN[c]) * t) * n;
-    color[i * 4 + 3] = a;
-    const hgt = Math.min(255, (a / 255) * (90 + t * 165));
-    height[i * 4] = height[i * 4 + 1] = height[i * 4 + 2] = hgt; height[i * 4 + 3] = 255;
-  }
-  const make = (data, srgb) => {
-    const tex = new THREE.DataTexture(data, w, h);
+// Run jobs a slice at a time when the page is idle, so building the textures never
+// holds up a frame (a slice is a few milliseconds at most).
+const idle = (fn) => (window.requestIdleCallback ? requestIdleCallback(fn, { timeout: 200 }) : setTimeout(fn, 16));
+function runSliced(steps) {
+  const next = () => {
+    const t0 = performance.now();
+    while (steps.length && performance.now() - t0 < 6) steps.shift()();
+    if (steps.length) idle(next);
+  };
+  idle(next);
+}
+
+// A blood texture pair (colour with alpha, and a height map for the bump), made
+// empty now so the materials are complete from the start, and painted later.
+function bloodTextures(size) {
+  const make = (srgb) => {
+    const tex = new THREE.DataTexture(new Uint8Array(size * size * 4), size, size);
     tex.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
     tex.generateMipmaps = true;
     tex.minFilter = THREE.LinearMipmapLinearFilter;
@@ -142,24 +132,60 @@ function maskToTextures(canvas, dark = 0) {
     tex.needsUpdate = true;
     return tex;
   };
-  return { map: make(color, true), bump: make(height, false) };
+  return { size, map: make(true), bump: make(false) };
+}
+
+// Steps that paint a pair: draw the white-on-transparent mask (`draws`, one step
+// each), then turn it into blood colour (alpha = mask) and a height map (the
+// blurred mask: thick where the blood pooled), a band of rows per step.
+function paintSteps(tex, draws, dark = 0) {
+  const w = tex.size, h = tex.size;
+  const canvas = document.createElement('canvas');
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  let mask, thick;
+  const color = tex.map.image.data, height = tex.bump.image.data;
+  const steps = draws.map((draw) => () => draw(ctx));
+  steps.push(() => {
+    mask = ctx.getImageData(0, 0, w, h).data;
+    // Blur by shrinking and growing again (canvas filters are missing on older Safari).
+    const small = document.createElement('canvas');
+    small.width = w / 8; small.height = h / 8;
+    small.getContext('2d').drawImage(canvas, 0, 0, small.width, small.height);
+    const big = document.createElement('canvas');
+    big.width = w; big.height = h;
+    const bc = big.getContext('2d');
+    bc.imageSmoothingQuality = 'high';
+    bc.drawImage(small, 0, 0, w, h);
+    thick = bc.getImageData(0, 0, w, h).data;
+  });
+  const band = 32;
+  for (let y0 = 0; y0 < h; y0 += band) {
+    steps.push(() => {
+      for (let i = y0 * w, end = Math.min(h, y0 + band) * w; i < end; i++) {
+        const a = mask[i * 4 + 3], t = Math.min(1, thick[i * 4 + 3] / 255 * 1.4 + dark);
+        const n = 0.9 + Math.random() * 0.1;
+        for (let c = 0; c < 3; c++) color[i * 4 + c] = (THIN[c] + (THICK[c] - THIN[c]) * t) * n;
+        color[i * 4 + 3] = a;
+        const hgt = Math.min(255, (a / 255) * (90 + t * 165));
+        height[i * 4] = height[i * 4 + 1] = height[i * 4 + 2] = hgt; height[i * 4 + 3] = 255;
+      }
+    });
+  }
+  steps.push(() => { tex.map.needsUpdate = true; tex.bump.needsUpdate = true; });
+  return steps;
 }
 
 // A 2x2 atlas: 0 spray, 1 splash (streaks along +X), 2 drops, 3 wound.
-function makeAtlas(size) {
-  const c = document.createElement('canvas');
-  c.width = c.height = size;
-  const ctx = c.getContext('2d');
-  const s = size / 2, pad = s * 0.04;
-  ['spray', 'splash', 'drops', 'wound'].forEach((k, i) => drawSplat(ctx, (i % 2) * s + pad, Math.floor(i / 2) * s + pad, s - 2 * pad, k));
-  return maskToTextures(c);
+function atlasSteps(tex) {
+  const s = tex.size / 2, pad = s * 0.04;
+  return paintSteps(tex, ['spray', 'splash', 'drops', 'wound'].map((k, i) =>
+    (ctx) => drawSplat(ctx, (i % 2) * s + pad, Math.floor(i / 2) * s + pad, s - 2 * pad, k)));
 }
 
-function makePoolTexture(size) {
-  const c = document.createElement('canvas');
-  c.width = c.height = size;
-  drawSplat(c.getContext('2d'), size * 0.02, size * 0.02, size * 0.96, 'pool');
-  return maskToTextures(c, 0.35);
+function poolSteps(tex) {
+  const size = tex.size;
+  return paintSteps(tex, [(ctx) => drawSplat(ctx, size * 0.02, size * 0.02, size * 0.96, 'pool')], 0.35);
 }
 
 // Soft, lumpy puff for the mist.
@@ -183,8 +209,8 @@ function makeMistTexture() {
 }
 
 // Blood on the lens: splashes around the edges with droplets flung inward and
-// runs dripping down, the middle left clear. Returns a data URL.
-function makeScreenSplatter(w, h) {
+// runs dripping down, the middle left clear. Hands `done` a CSS url().
+function makeScreenSplatter(w, h, done) {
   const c = document.createElement('canvas');
   c.width = w; c.height = h;
   const ctx = c.getContext('2d');
@@ -233,7 +259,8 @@ function makeScreenSplatter(w, h) {
     ellipse(ctx, x - R * 0.25, y - R * 0.3, R * 0.25, R * 0.08, -0.5);
     ctx.restore();
   }
-  return c.toDataURL('image/png');
+  // Encoded off the main thread.
+  c.toBlob((b) => b && done(`url(${URL.createObjectURL(b)})`));
 }
 
 // Instanced materials read a per-instance attribute aFx: x = atlas tile (0..3),
@@ -302,7 +329,10 @@ export class Blood {
     this.last = 0;
     this.timeScale = 1;   // tests slow it down to look at a spray mid-flight
 
-    const atlas = makeAtlas(CAP.tex), pool = makePoolTexture(CAP.tex / 2);
+    // The splat textures are painted in idle moments after start (a splat made
+    // before then appears once they are ready).
+    const atlas = bloodTextures(CAP.tex), pool = bloodTextures(CAP.tex / 2);
+    runSliced([...atlasSteps(atlas), ...poolSteps(pool)]);
     // Wet, but with a weaker sheen than a plain glossy surface: at full strength the
     // sky's reflection washes the red out to lilac.
     const SHEEN = { specularIntensity: 0.45, specularColor: new THREE.Color(1, 0.75, 0.72) };
@@ -757,17 +787,17 @@ export class Blood {
     this.screenLow = layer();
     this.screenNext = 0;
     this.lowShown = -1;
-    // The images are drawn a moment after start, off the first frame's path.
+    // The images are drawn one at a time in idle moments after start.
     this.screenImages = [];
-    setTimeout(() => {
-      const w = PHONE ? 640 : 1280, h = PHONE ? 360 : 720;
-      for (let i = 0; i < 3; i++) this.screenImages.push(`url(${makeScreenSplatter(w, h)})`);
-      this.screenLow.style.backgroundImage = this.screenImages[2];
-    }, 50);
+    const w = PHONE ? 640 : 1280, h = PHONE ? 360 : 720;
+    runSliced([0, 1, 2].map((i) => () => makeScreenSplatter(w, h, (url) => {
+      this.screenImages[i] = url;
+      if (i === 2) this.screenLow.style.backgroundImage = url;
+    })));
   }
 
   splatterScreen(strength) {
-    if (!this.screenImages.length) return;
+    if (!this.screenImages[0] || !this.screenImages[1]) return;
     const el = this.screen[this.screenNext];
     this.screenNext = (this.screenNext + 1) % this.screen.length;
     el.style.backgroundImage = this.screenImages[Math.floor(Math.random() * 2)];
