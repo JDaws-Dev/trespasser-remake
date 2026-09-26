@@ -286,7 +286,7 @@ export class Game {
     const half = (Math.abs(fwd.x) * size.x + Math.abs(fwd.y) * size.y + Math.abs(fwd.z) * size.z) / 2;
     m.sprite.position.copy(c).addScaledVector(fwd, half + 0.03);
     m.light.position.copy(m.sprite.position).addScaledVector(fwd, 0.2);
-    const s = 0.12 + Math.min(0.2, (p.Damage || 20) / 250);
+    const s = 0.28 + Math.min(0.3, (p.Damage || 20) / 120);
     m.sprite.scale.set(s, s, s);
     m.sprite.material.rotation = p.RandomRotate ? Math.random() * Math.PI * 2 : 0;
     m.sprite.visible = true;

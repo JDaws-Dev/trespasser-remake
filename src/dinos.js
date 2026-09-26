@@ -144,6 +144,7 @@ export class DinoAI {
     d.length = Math.max(size.x, size.y);
     d.radius = d.raptor ? 1.2 : Math.max(1.5, size.z / 2);   // blood.js sizes its sprays by this
     d.reach = Math.max(size.x, size.y, size.z) / 2;           // broad-phase sphere for shots
+    d.jaw = Math.max(d.headReach, d.bounds.max.y * d.scale);   // body centre to the tip of the snout
     d.boxes = { head: boxOf(p.Head) || [1, 0], body: boxOf(p.Body) || [1, 0], tail: boxOf(p.Tail) || [1, 0] };
     if (d.hidden) this.game.setInstanceMatrix(index, _m.makeScale(0, 0, 0));
     return d;
@@ -164,6 +165,8 @@ export class DinoAI {
     d.hidden = false;
     d.home.copy(d.pos);
     d.awake = true;
+    // Sent in to ambush: it knows where she is.
+    if (this.player) { d.seen = this.time; d.known.copy(this.player.pos); }
   }
 
   // Stay near a named object (or a point), as SET_AI StayNear: come back when further
@@ -455,7 +458,7 @@ export class DinoAI {
         const straight = tDist < 5 || this.anneFacingAway(d, player);
         want = rotate2(to, straight ? 0 : d.cine);
         // Stand off with its jaws at her rather than climbing onto her.
-        const stand = d.headReach + 0.2;
+        const stand = d.jaw + 0.3;
         speed = tDist > stand ? run : 0;
         if (tDist < stand * 3 && tDist > stand) speed = Math.min(run, walk + (tDist - stand) * 2);
         break;
@@ -521,10 +524,10 @@ export class DinoAI {
         speed = 0;
         d.turnTo = this.time - d.seen < FORGET ? Math.atan2(to.y, to.x) - Math.PI / 2 : null;
     }
-    if (d.attack && tDist < d.headReach + 1.5) {
+    if (d.attack && tDist < d.jaw + 1.5) {
       // Biting: face her, only shuffling in.
       want = { x: to.x, y: to.y };
-      speed = Math.min(speed, tDist > d.headReach + 0.2 ? walk : 0);
+      speed = Math.min(speed, tDist > d.jaw + 0.3 ? walk : 0);
     }
     if (d.flinch > 0) speed *= 0.2;
     if (want) {
@@ -647,7 +650,7 @@ export class DinoAI {
     if (Math.abs(player.pos.z + 1 - (d.pos.z)) > d.headReach + 2) return false;
     const dx = player.pos.x - d.pos.x, dy = player.pos.y - d.pos.y;
     const flat = Math.hypot(dx, dy);
-    if (flat > d.headReach + 0.8) return false;
+    if (flat > d.jaw + 0.9) return false;
     const fx = -Math.sin(d.yaw), fy = Math.cos(d.yaw);
     return (dx * fx + dy * fy) / (flat || 1) > 0.45;
   }
