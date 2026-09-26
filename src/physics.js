@@ -28,10 +28,21 @@ const ASSISTS = {
   // toppled in the original; in Rapier the 400 kg slabs only slide a few cm. The push
   // is applied high on the slab, hard enough to tip it over.
   'SFallingWall-*': { topple: 1.8 },
+  // as: the Mayan heads on the steps (Push 35-42 from their emitters) topple off their
+  // plinths onto the path, like the walls; in Rapier they only slid about 1.2 m.
+  'SMayanHead-*': { topple: 1.8 },
+  // as: the rolling stone head is shoved (Push 250 from HeadShover) once it rolls into
+  // TrigHeadPush, and must reach FSMayanStairs01-24 below (whose collision trigger drops
+  // the platform). The shover sits 3.6 m to one side of it there, so the push at that
+  // point only twists the 854 kg compound (1.2 m/s at 4x). It is shoved at its centre,
+  // at 4 m/s, toward those stairs (its roll into the trigger replaced, or it goes wide).
+  'Ptstonehead00-00': { centrePush: 4, toward: 'FSMayanStairs01-24' },
   // as2: the trailer on the cliff edge see-saws over under Anne and slides down with her;
   // its one big box barely tips under her 55 kg (a marginal balance even in the
-  // original). Her weight counts four times on it.
-  'Scontrailershore-00': { weight: 4 },
+  // original). When TrigTrailerDrop releases it (its second unfreeze, as she reaches the
+  // overhanging end) its far end is pressed down to tip it over the edge; before that it
+  // must not tip into its own freeze volume while she walks it.
+  'Scontrailershore-00': { tipOnUnfreeze: 2, tip: 3 },
   // jr: the unfrozen monorail track sections fall onto the terrain in the original; here
   // they caught on the static track and pylons after 0.8-0.95 m. They pass through static
   // scenery (still landing on the terrain and hitting everything that moves).
@@ -503,6 +514,15 @@ export class Physics {
   unfreeze(name) {
     const e = this.body(name);
     if (!e) return false;
+    e.unfreezes = (e.unfreezes || 0) + 1;
+    const a = assistFor(name);
+    if (a?.tipOnUnfreeze === e.unfreezes) {
+      // Its overhanging end (+X, the longer half) pressed down: a·mass N·s.
+      const b = this.modelBounds(e.inst.model);
+      const end = new THREE.Vector3(b.max.x * e.scale * 0.9, 0, 0).applyQuaternion(e.curQ).add(e.curP);
+      if (e.frozen) { e.body.setBodyType(RAPIER.RigidBodyType.Dynamic, true); e.frozen = false; }
+      e.body.applyImpulseAtPoint({ x: 0, y: 0, z: -a.tip * e.mass }, end, true);
+    }
     if (e.frozen) { e.body.setBodyType(RAPIER.RigidBodyType.Dynamic, true); e.frozen = false; }
     e.body.wakeUp();
     this.live.add(e);
@@ -531,6 +551,16 @@ export class Physics {
     // Rapier's: at 1x the Ascent's rolling head stops 2.5 m short of the stairs it must
     // reach. Scripted pushes are scaled by pushScale (4: the head reaches the stairs).
     const a = assistFor(name), e = this.body(name);
+    if (a?.centrePush && e) {
+      this.unfreeze(name);
+      const to = a.toward && this.body(a.toward);
+      if (to) dir.copy(to.curP).add(new THREE.Vector3(...(a.aimOffset || [0, 0, 0]))).sub(e.curP);
+      dir.z = 0; dir.normalize(); dir.z = 0.2;   // slightly up: it slides rather than digs in
+      // Its roll into the trigger is replaced by the shove (it would carry it wide).
+      e.body.setLinvel(dir.multiplyScalar(a.centrePush), true);
+      e.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+      return true;
+    }
     if (a?.topple && e) {
       // Pushed high on the slab (near its top), enough to tip it: a·mass N·s.
       this.unfreeze(name);
@@ -1218,7 +1248,11 @@ export class Physics {
     if ((this.cull = (this.cull || 0) + 1) % 30 === 0) {
       for (const e of this.live) {
         if (e === this.held?.entry || e.body.isSleeping()) continue;
-        if (Math.hypot(e.curP.x - player.pos.x, e.curP.y - player.pos.y) > AWAKE_RADIUS) e.body.sleep();
+        if (Math.hypot(e.curP.x - player.pos.x, e.curP.y - player.pos.y) <= AWAKE_RADIUS) continue;
+        // Only what has nearly settled: a set piece in motion (a falling wall, a rolling
+        // head) plays out wherever she is.
+        const v = e.body.linvel();
+        if (v.x * v.x + v.y * v.y + v.z * v.z < 0.25) e.body.sleep();
       }
     }
     // Draw: between the last two steps.
