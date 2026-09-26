@@ -847,9 +847,10 @@ class FrontEnd {
       [1038, 'wrist', 248, 74], [1039, 'hand', 248, 88], [1040, 'grab', 248, 102], [1041, 'stow', 248, 116], [1042, 'replayVO', 248, 130]];
     // The modern hand (modernhand.js) re-uses the hand rows for look-and-click.
     const MODERN = {
-      hand: { label: 'Pick up / use', keys: 'Left mouse', note: 'Look at a thing and click: pick it up, press it or open it; click again to drop. Hold and move the view to drag doors.' },
-      grab: { label: 'Turn freely (hold)', keys: 'Right mouse', note: 'Hold the right button and move the mouse to turn what she holds; the view stays still.' },
-      wrist: { label: 'Turn held', keys: 'Wheel', note: 'The wheel turns what she holds about the vertical.' },
+      hand: { label: KEYMAP.find((k) => k.action === 'hand')?.modern || 'Fire (holding a gun) / pick up / use', keys: 'Left mouse',
+        cell: 'Fire / pick up', note: 'Click: pick up / use. With a gun: click fires.' },
+      grab: { label: 'Turn freely (hold)', keys: 'Right mouse', note: 'Hold and move the mouse to turn what she holds.' },
+      wrist: { label: 'Turn held', keys: 'Wheel', note: 'Turns what she holds about the vertical.' },
       arm: { label: '', keys: '' },
     };
     const TOUCH_KEYS = {
@@ -860,13 +861,14 @@ class FrontEnd {
     };
     const TOUCH_LABELS = { modern: { hand: 'Pick up / drop', grab: 'Move held', wrist: 'Turn held' }, classic: {} };
     const TOUCH_NOTES = {
-      modern: { hand: 'Tap a thing to pick it up or use it; tap again to drop it.', grab: 'While she holds something, drag a finger to move it.' },
-      classic: { hand: 'HAND switches the right stick from looking to moving her hand.', wrist: 'Hold ROTATE: the right stick turns her wrist.' },
+      modern: { hand: 'Tap a thing to pick up or use it; tap again to drop.', grab: 'Drag a finger to move what she holds.' },
+      classic: { hand: 'HAND: the right stick moves her hand.', wrist: 'Hold ROTATE: the right stick turns her wrist.' },
     };
     const idle = () => (TOUCH ? 'Right stick looks around · II pauses'
       : `Also: ${['turnLeft', 'turnRight', 'reach', 'drop'].filter((a) => !(style === 'modern' && a === 'reach'))
         .map((a) => `${keyNames(byAction[a]?.codes)} ${byAction[a]?.label.toLowerCase()}`).join(' · ')}`);
-    const idleTop = () => (style === 'modern' ? 'Modern hand: look at a thing and click' : 'Classic hand: the mouse moves her hand, as in 1998');
+    const idleTop = () => (style === 'modern' ? (TOUCH ? 'Modern hand: tap a thing to pick it up or use it' : 'Modern hand: look at a thing and click')
+      : TOUCH ? 'Classic hand: HAND, then the right stick moves her hand' : 'Classic hand: the mouse moves her hand, as in 1998');
 
     const info = new Map();   // key cell id → [top line, bottom line]
     const fill = () => {
@@ -879,7 +881,7 @@ class FrontEnd {
         let label = m ? m.label : k.label;
         if (TOUCH && TOUCH_LABELS[style][action]) label = TOUCH_LABELS[style][action];
         const keys = TOUCH ? TOUCH_KEYS[style][action] || '' : m ? m.keys : keyNames(k.codes);
-        const cellLabel = action === 'replayVO' ? 'Replay VO' : label.replace(/ \(hold\)$/, '');
+        const cellLabel = action === 'replayVO' ? 'Replay VO' : m?.cell || label.replace(/ \(hold\)$/, '');
         const lab = at(lx, ly);
         if (lab) lab.textContent = cellLabel;
         win.text(id, keys);
@@ -888,21 +890,29 @@ class FrontEnd {
           : `${label}: ${keys || '—'}${k.original && !m ? `   (original: ${k.original})` : ''}`;
         info.set(id, [top, note]);
       }
-      win.text(900, idleTop());
-      win.text(902, idle());
+      fit(900, idleTop());
+      note(idle());
     };
     const setStyle = (s) => { style = s; fill(); };
+    // The info lines are one line each (the note sits between the rows and the buttons):
+    // a long one shrinks to fit.
+    const fit = (id, t) => {
+      const e = win.get(id);
+      e.textContent = t;
+      for (let px = 9; px >= 6; px -= 0.5) { e.style.fontSize = px + 'px'; if (e.scrollWidth <= e.clientWidth) break; }
+    };
+    const note = (t) => fit(902, t);
     fill();
     for (const [id] of rows) {
       const cell = win.get(id);
       const cy = parseFloat(cell.style.top);
       const hot = [...win.el.querySelectorAll('.fe-hot')].find((h) => Math.abs(parseFloat(h.style.top) - cy) < 2
-        && parseFloat(h.style.left) <= parseFloat(cell.style.left) && parseFloat(h.style.left) + parseFloat(h.style.width) >= parseFloat(cell.style.left) + 10);
+        && parseFloat(h.style.left) <= parseFloat(cell.style.left) + 4 && parseFloat(h.style.left) + parseFloat(h.style.width) >= parseFloat(cell.style.left) + 10);
       if (!hot) continue;
-      const show = () => { const [t, n] = info.get(id) || []; if (!t) return; win.text(900, t); win.text(902, n || idle()); };
+      const show = () => { const [t, n] = info.get(id) || []; if (!t) return; fit(900, t); note(n || idle()); };
       hot.addEventListener('pointerenter', show);
       hot.addEventListener('pointerdown', show);
-      hot.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') { win.text(900, idleTop()); win.text(902, idle()); } });
+      hot.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') { fit(900, idleTop()); note(idle()); } });
     }
     this.push(win, { onEscape: () => win.onButton(ID.CANCEL) });
   }
