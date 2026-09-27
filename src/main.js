@@ -130,7 +130,13 @@ window.__player = player; window.__scene = scene; window.__renderer = renderer; 
 const input = new Input(renderer.domElement);
 const audio = new Audio(`levels/${LEVEL}`);
 const game = new Game({ scene, world, camera, info, refs, collider, groundAt, hud, level: LEVEL, audio });
-game.showHint(input.touch ? 'Left stick walks, right stick looks. GRAB picks up a gun, FIRE shoots.' : 'WASD walk · Shift run · Q jump · Z crouch · hold left mouse: move hand · right mouse grab · Space fire · F throw · E stow · Esc menu', 7);
+// The opening hint matches the hand style the player has chosen.
+const modernHand = physics.handStyle !== 'classic';
+game.showHint(input.touch
+  ? (modernHand ? 'Left stick walks, right stick looks. Tap things to pick up or use them. FIRE shoots.'
+                : 'Left stick walks, right stick looks. HAND moves her hand, GRAB grabs, FIRE shoots.')
+  : (modernHand ? 'WASD walk · Shift run · Q jump · click to pick up / use / fire · wheel turns · F throw · Esc menu'
+                : 'WASD walk · Shift run · Q jump · Z crouch · hold left mouse: move hand · right mouse grab · Space fire · F throw · E stow · Esc menu'), 7);
 window.__game = game;
 game.physics = physics;
 physics.attachGame(game);
