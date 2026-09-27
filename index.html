@@ -32,11 +32,14 @@
   #weapon { position: absolute; right: var(--edge-r); top: var(--edge-t); font-variant-numeric: tabular-nums; }
   #weapon b { margin-left: 6px; font-size: 18px; }
   #weapon .none { color: var(--dim); font-weight: 500; }
-  body.touch #weapon { right: calc(var(--edge-r) + 52px); }
   #hint { position: absolute; left: 50%; top: calc(var(--edge-t) + 34px); transform: translateX(-50%); max-width: min(80vw, 560px); text-align: center;
           padding: 6px 12px; border-radius: 6px; background: rgba(0,0,0,.35); opacity: 0; transition: opacity .3s; }
   #hint.on { opacity: 1; }
   #hint:empty { display: none; }
+  /* Level text from the triggers ("To move forward, push the left stick."). */
+  #trigger-text { position: fixed; left: 50%; top: 14%; transform: translateX(-50%); max-width: min(90vw, 720px); z-index: 30;
+                  padding: 6px 14px; font: 600 clamp(14px, 2.2vw, 20px)/1.35 Georgia, "Times New Roman", serif; text-align: center;
+                  text-shadow: 0 1px 3px #000, 0 0 8px #000; }
   /* Damage: red edges that flash on a hit, and a slow heartbeat below 30 health. */
   .vignette { position: fixed; inset: 0; pointer-events: none; opacity: 0;
               background: radial-gradient(ellipse at center, transparent 45%, rgba(150,0,0,.55) 80%, rgba(110,0,0,.9) 100%); }
@@ -85,19 +88,59 @@
      On a phone it fills the screen's width (or height, whichever fits first). */
   #fe-video video { position: absolute; inset: 0; margin: auto; width: 100%; height: 100%; max-width: 1280px; max-height: 960px; object-fit: contain; image-rendering: auto; }
   @media (pointer: coarse) { #fe-video video { max-width: none; max-height: none; } }
-  .stick { position: fixed; bottom: max(24px, env(safe-area-inset-bottom)); width: 132px; height: 132px; border-radius: 50%;
-           border: 2px solid rgba(255,255,255,.25); background: rgba(0,0,0,.15); display: none; }
-  .stick i { position: absolute; left: 41px; top: 41px; width: 50px; height: 50px; border-radius: 50%; background: rgba(255,255,255,.35); }
-  #stickL { left: max(24px, env(safe-area-inset-left)); }
-  #stickR { right: max(24px, env(safe-area-inset-right)); }
+  /* Touch layout, one plan for every control (phones in landscape down to 667x375 or
+     shorter with browser bars, notches, iPads):
+       top-left      health                    top-right  weapon · ? · pause
+       top centre    level text, then the HUD hint, small, clear of the middle of the view
+       bottom-left   left stick                bottom-right  right stick, with FIRE (biggest),
+                                                             GRAB and JUMP in an arc round its upper left
+       bottom, left of JUMP: the secondary pills (#handpad: CROUCH, and THROW / STOW only
+       when they apply; HAND / ROTATE for the classic hand), two rows at most.
+     Button centres sit on circles about the right stick's centre, so they keep their
+     gaps whatever the sizes; sizes step down on short screens, never below 44 px. */
+  :root { --stick: 120px; --fire: 76px; --btn: 58px; --pill: 44px; --arc-gap: 10px; }
+  @media (max-height: 360px) { :root { --stick: 108px; --fire: 68px; --btn: 52px; } }
+  @media (min-height: 640px) { :root { --stick: 150px; --fire: 92px; --btn: 70px; --pill: 50px; } }
+  .stick { position: fixed; bottom: var(--edge-b); width: var(--stick); height: var(--stick); border-radius: 50%;
+           border: 2px solid rgba(255,255,255,.25); background: rgba(0,0,0,.15); display: none; box-sizing: border-box; }
+  .stick i { position: absolute; left: 50%; top: 50%; width: 50px; height: 50px; margin: -25px 0 0 -25px; border-radius: 50%; background: rgba(255,255,255,.35); }
+  #stickL { left: var(--edge-l); }
+  #stickR { right: var(--edge-r); }
   body.touch .stick { display: block; }
-  .btn { position: fixed; width: 68px; height: 68px; border-radius: 50%; border: 2px solid rgba(255,255,255,.3); background: rgba(0,0,0,.25);
-         color: #f2eee0; font: 700 13px -apple-system, sans-serif; display: none; place-items: center; letter-spacing: .04em; }
+  .btn { position: fixed; width: var(--btn); height: var(--btn); border-radius: 50%; border: 2px solid rgba(255,255,255,.3); background: rgba(0,0,0,.25);
+         color: #f2eee0; font: 700 13px -apple-system, sans-serif; display: none; place-items: center; letter-spacing: .04em; padding: 0; box-sizing: border-box;
+         -webkit-user-select: none; user-select: none; touch-action: none; }
   body.touch .btn { display: grid; }
-  #btn-fire { right: max(24px, env(safe-area-inset-right)); bottom: calc(max(24px, env(safe-area-inset-bottom)) + 150px); width: 84px; height: 84px; }
-  #btn-grab { right: calc(max(24px, env(safe-area-inset-right)) + 100px); bottom: calc(max(24px, env(safe-area-inset-bottom)) + 160px); }
-  #btn-jump { right: calc(max(24px, env(safe-area-inset-right)) + 148px); bottom: calc(max(24px, env(safe-area-inset-bottom)) + 70px); }
-  #btn-pause { top: var(--edge-t); right: var(--edge-r); bottom: auto; width: 40px; height: 40px; font-size: 12px; }
+  /* Arc: angle θ from the stick's centre (0° = right, 90° = up), radius = stick/2 + gap + size/2.
+     FIRE at 100°, GRAB at 145°, JUMP at 192°. */
+  #btn-fire { width: var(--fire); height: var(--fire); font-size: 15px;
+              right: calc(var(--edge-r) + var(--stick) / 2 + 0.1736 * (var(--stick) / 2 + var(--arc-gap) + var(--fire) / 2) - var(--fire) / 2);
+              bottom: calc(var(--edge-b) + var(--stick) / 2 + 0.9848 * (var(--stick) / 2 + var(--arc-gap) + var(--fire) / 2) - var(--fire) / 2); }
+  #btn-grab { right: calc(var(--edge-r) + var(--stick) / 2 + 0.8192 * (var(--stick) / 2 + var(--arc-gap) + var(--btn) / 2) - var(--btn) / 2);
+              bottom: calc(var(--edge-b) + var(--stick) / 2 + 0.5736 * (var(--stick) / 2 + var(--arc-gap) + var(--btn) / 2) - var(--btn) / 2); }
+  #btn-jump { right: calc(var(--edge-r) + var(--stick) / 2 + 0.9781 * (var(--stick) / 2 + var(--arc-gap) + var(--btn) / 2) - var(--btn) / 2);
+              bottom: calc(var(--edge-b) + var(--stick) / 2 - 0.2079 * (var(--stick) / 2 + var(--arc-gap) + var(--btn) / 2) - var(--btn) / 2); }
+  /* Top-right corner: pause, and the hint "?" beside it (triggers.js). */
+  #btn-pause, #btn-help { top: var(--edge-t); bottom: auto; width: 44px; height: 44px; font-size: 13px; }
+  #btn-pause { right: var(--edge-r); }
+  #btn-help { right: calc(var(--edge-r) + 52px); font: 700 20px Georgia, serif; z-index: 31; }
+  body.touch #weapon { right: calc(var(--edge-r) + 108px); top: calc(var(--edge-t) + 11px); }
+  /* Secondary actions (hand.js): pills left of JUMP along the bottom, filling from the right. */
+  #handpad { position: fixed; display: none; z-index: 20; bottom: var(--edge-b);
+             right: calc(var(--edge-r) + var(--stick) / 2 + 0.9781 * (var(--stick) / 2 + var(--arc-gap) + var(--btn) / 2) + var(--btn) / 2 + 12px);
+             width: calc(3 * 64px + 2 * 8px); flex-wrap: wrap-reverse; justify-content: flex-end; align-content: flex-start; gap: 8px; }
+  body.touch.playing #handpad { display: flex; }
+  #handpad button { width: 64px; height: var(--pill); border-radius: calc(var(--pill) / 2); border: 1px solid rgba(255,255,255,.45);
+                    background: rgba(0,0,0,.35); color: #fff; font: 600 11px/1 system-ui, sans-serif; letter-spacing: .06em; padding: 0;
+                    -webkit-user-select: none; user-select: none; touch-action: none; }
+  #handpad button.on { background: rgba(255,210,120,.55); color: #000; }
+  body.modernhand #handpad .classic { display: none; }
+  /* Only what applies: THROW while she holds something, STOW with a gun (or one put away). */
+  body:not(.holding) #handpad .throw { display: none; }
+  body:not(.armed):not(.stowed) #handpad .stow { display: none; }
+  /* Text stays high and small on touch, under the top row, clear of the middle of the view. */
+  body.touch #trigger-text { top: calc(var(--edge-t) + 50px); max-width: min(56vw, 520px); padding: 2px 10px; font-size: clamp(13px, 1.7vw, 16px); }
+  body.touch #hint { top: calc(var(--edge-t) + 102px); max-width: min(50vw, 440px); font-size: 12px; padding: 3px 10px; }
   /* The touch controls only make sense while playing. */
   body.touch:not(.playing) .stick, body.touch:not(.playing) .btn { display: none; }
 </style>

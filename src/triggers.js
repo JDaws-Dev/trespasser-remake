@@ -1096,12 +1096,8 @@ export class Triggers {
   makeOverlay() {
     const box = document.createElement('div');
     box.id = 'trigger-text';
-    Object.assign(box.style, {
-      position: 'fixed', left: '50%', top: '14%', transform: 'translateX(-50%)', maxWidth: 'min(90vw, 720px)',
-      padding: '6px 14px', font: '600 clamp(14px, 2.2vw, 20px)/1.35 Georgia, "Times New Roman", serif',
-      color: '#fff', textAlign: 'center', textShadow: '0 1px 3px #000, 0 0 8px #000', pointerEvents: 'none',
-      zIndex: 30, opacity: 0, transition: 'opacity .35s',
-    });
+    // Placement and type: index.html (#trigger-text), with the touch layout.
+    Object.assign(box.style, { color: '#fff', pointerEvents: 'none', opacity: 0, transition: 'opacity .35s' });
     document.body.appendChild(box);
     this.textEl = box;
     this.textQueue = [];
@@ -1111,11 +1107,10 @@ export class Triggers {
     if (TOUCH) {
       const b = document.createElement('button');
       b.textContent = '?';
-      Object.assign(b.style, {
-        position: 'fixed', right: '12px', top: 'calc(env(safe-area-inset-top, 0px) + 56px)', width: '40px', height: '40px',
-        borderRadius: '50%', border: '1px solid rgba(255,255,255,.5)', background: 'rgba(0,0,0,.35)', color: '#fff',
-        font: '700 20px Georgia, serif', zIndex: 31, display: 'none',
-      });
+      // Placed beside the pause button by the touch layout (index.html, #btn-help).
+      b.id = 'btn-help';
+      b.className = 'btn';
+      b.style.display = 'none';
       b.addEventListener('touchstart', (e) => { e.preventDefault(); this.showHint(); }, { passive: false });
       document.body.appendChild(b);
       this.hintButton = b;

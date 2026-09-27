@@ -88,6 +88,17 @@ export class UI {
 
   update({ hp, maxHp, gun, hint }) {
     const s = this.shown;
+    // What she has in hand, for the touch layout (THROW / STOW show only when they apply).
+    const ph = this.game.physics;
+    const hand = ph?.hand;
+    const handKey = `${!!(hand?.holding || ph?.held)}${!!gun}${!!hand?.stowed}`;
+    if (s.handState !== handKey) {
+      s.handState = handKey;
+      const b = document.body.classList;
+      b.toggle('holding', !!(hand?.holding || ph?.held));
+      b.toggle('armed', !!gun);
+      b.toggle('stowed', !!hand?.stowed);
+    }
     const h = Math.max(0, Math.round(hp));
     if (s.hp !== h) {
       s.hp = h;

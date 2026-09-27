@@ -59,16 +59,7 @@ export class HandControls {
   }
 
   buttons() {
-    const style = document.createElement('style');
-    style.textContent = `
-      #handpad { position: fixed; right: 12px; top: 22%; display: none; flex-direction: column; gap: 8px; z-index: 20; }
-      body.touch.playing #handpad { display: flex; }
-      #handpad button { width: 64px; height: 40px; border-radius: 20px; border: 1px solid rgba(255,255,255,.45);
-        background: rgba(0,0,0,.35); color: #fff; font: 600 11px/1 system-ui, sans-serif; letter-spacing: .06em;
-        -webkit-user-select: none; user-select: none; touch-action: none; }
-      #handpad button.on { background: rgba(255,210,120,.55); color: #000; }
-      body.modernhand #handpad .classic { display: none; }`;
-    document.head.append(style);
+    // Placement and look live with the rest of the touch layout (index.html, #handpad).
     const pad = document.createElement('div');
     pad.id = 'handpad';
     const make = (label, down, up, cls = '') => {
@@ -86,9 +77,9 @@ export class HandControls {
     const ph = this.physics;
     make('HAND', (b) => { this.touchHand = !this.touchHand; b.classList.toggle('on', this.touchHand); }, null, 'classic');
     make('ROTATE', (b) => { this.touchRotate = true; b.classList.add('on'); }, (b) => { this.touchRotate = false; b.classList.remove('on'); }, 'classic');
-    make('THROW', () => ph.handThrow(ph.player));
-    make('STOW', (b) => { b.classList.toggle('on', ph.stow()); });
-    make('CROUCH', (b) => { this.touchCrouch = !this.touchCrouch; b.classList.toggle('on', this.touchCrouch); });
+    make('THROW', () => ph.handThrow(ph.player), null, 'throw');
+    make('STOW', (b) => { b.classList.toggle('on', ph.stow()); }, null, 'stow');
+    make('CROUCH', (b) => { this.touchCrouch = !this.touchCrouch; b.classList.toggle('on', this.touchCrouch); }, null, 'crouch');
     document.body.append(pad);
   }
 
